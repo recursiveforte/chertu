@@ -4,17 +4,29 @@
 
 This is [recursiveforte's fork](https://github.com/recursiveforte/chert) of
 [ceselder/chert](https://github.com/ceselder/chert). **Codex is the default backend.**
-Start a session with `/codex`, then reply in its Discord thread to continue the same
-Codex conversation. No Claude Code installation, hooks, or tmux are needed.
+Type a prompt in `#codex`, then reply in its Discord thread to continue the same
+Codex conversation. No slash command or mention is needed. Existing Codex sessions
+on the machine appear automatically. No Claude Code installation, hooks, or tmux are needed.
 
 Chert runs the installed Codex CLI using [`codex exec --json` and explicit session
 resume](https://developers.openai.com/codex/noninteractive/). It uses your normal
 Codex login and configuration; it doesn't copy credentials into a separate Codex home.
+For already-running sessions, Chert connects to the existing local
+[Codex app-server](https://learn.chatgpt.com/docs/app-server) and shares the same live
+conversation with your terminal or editor.
 
 ## What works
 
-- `/codex prompt [project]` creates a Discord thread and a Codex session.
-- Messages in that thread resume its saved Codex session ID. Replies received while
+- A plain prompt in `#codex` creates a Discord thread and a Codex session.
+  `/codex prompt [project]` is an optional way to choose a project.
+- Existing user-facing sessions loaded in the local Codex daemon get threads
+  automatically, including sessions already running when the bridge starts.
+  Their new assistant messages are mirrored into Discord. Internal subagents,
+  ephemeral jobs, and old unloaded history don't create extra threads.
+- Replies in discovered threads go directly to the original session. If it is busy,
+  the reply steers its active turn; if idle, it starts a new turn in the same session.
+  Chert doesn't start another process against the live conversation.
+- Messages in a bot-created thread resume its saved Codex session ID. Replies received while
   working are queued and processed in order, one turn at a time per thread.
 - Progress messages show tool activity; completed answers are posted in the thread.
   Very long answers are attached as a text file.
@@ -28,10 +40,10 @@ Codex login and configuration; it doesn't copy credentials into a separate Codex
 
 The original Claude backend is still available with `./setup.sh --backend claude`.
 Its commands, dashboard, hooks, and optional Astra integration are documented in
-[the upstream guide](docs/claude-backend.md). The Codex backend manages sessions
-started or explicitly attached through Chert; it does not mirror arbitrary running
-Codex terminals, forward interactive approval prompts, or include Claude's
-broadcast summarizer, dashboard, S3 tools, or Feldspar reviewers.
+[the upstream guide](docs/claude-backend.md). The Codex backend doesn't include
+Claude's broadcast summarizer, dashboard, S3 tools, or Feldspar reviewers.
+Approval/input requests from discovered sessions stay in their original Codex
+client; Chert notifies you to respond there.
 
 ## Install
 
@@ -65,7 +77,8 @@ service deployment; `--no-systemd` supports manual execution on Linux/macOS.
    gitignored. `--dry-run` changes nothing; `--skip-discord` stages an installation
    without provisioning channels or starting services.
 
-4. Put a project under `~/projects` (or set `PROJECT_ROOT` in `.env`). In `#codex`, run:
+4. Type a prompt in `#codex`, such as `Help me build a small website`. To select
+   a particular project under `~/projects` (or `PROJECT_ROOT`), optionally use:
 
    ```text
    /codex prompt:Explain this project project:my-project
@@ -100,9 +113,30 @@ in `CODEX_BIN`. Run `codex login` as the same user, with the same `CODEX_HOME` i
 | `/help` | Show available commands. |
 
 Text commands: `!codex <prompt>`, `!sessions`, `!stop`, `!kill`, `!rename <name>`,
-`!model <name>`, `!effort <level>`, and `!help`. Mentioning the bot in `#codex`
-starts a new session. Use `/codex` to choose a project and `/resume` to attach an ID.
+`!model <name>`, `!effort <level>`, and `!help`. Plain messages in `#codex` start
+new sessions; mentions also work. Use `/codex` to choose a project and `/resume` to attach an ID.
 Attachments aren't imported; put files in the project directory and refer to their paths.
+
+## Automatic discovery
+
+Chert polls the existing Codex app-server's loaded sessions every five seconds and
+subscribes to their assistant messages. It remembers the Discord mapping across
+restarts and does not repost the entire historical transcript. Discovered sessions
+keep their original project directory, including directories outside `PROJECT_ROOT`.
+That setting restricts project selection for new sessions, not existing conversations.
+
+This requires a recent Codex daemon exposing its local control socket (verified
+with app-server 0.160.0). By default Chert uses
+`~/.codex/app-server-control/app-server-control.sock`, or the equivalent beneath
+`CODEX_HOME`. Set `CODEX_APP_SERVER_SOCKET` for another local daemon. Chert never
+starts or restarts your daemon. If it isn't running, discovery retries in the
+background while new Discord-created sessions still work through `codex exec`.
+Older standalone sessions without an app-server connection aren't live-discovered;
+after closing them, `/resume` can attach their stored session IDs.
+
+`/stop` interrupts the active turn of a discovered session. `/kill` interrupts it
+and archives its Discord thread; it doesn't shut down the shared daemon or its
+other sessions. A killed thread stays hidden until explicitly reopened with `/resume`.
 
 ## Configuration and access
 
@@ -120,12 +154,17 @@ See [.env.example](.env.example). Settings include:
 | `CODEX_TURN_TIMEOUT` | `10800` | Maximum seconds per turn. |
 | `CODEX_STATE_FILE` | `private/codex-state.json` | Persistent thread/session map. |
 | `CODEX_LOG_DIR` | `private/codex-logs` | Private per-turn event, answer, and error logs. |
+| `CODEX_DISCOVER` | `1` | Automatically discover loaded user-facing Codex sessions. |
+| `CODEX_DISCOVERY_INTERVAL` | `5` | Seconds between discovery polls. |
+| `CODEX_APP_SERVER_SOCKET` | Codex home control socket | Unix socket for the already-running Codex daemon. |
 
-Codex runs non-interactively with approvals set to `never`. An operation that needs
+New bot-created Codex sessions run non-interactively with approvals set to `never`. An operation that needs
 approval fails instead of displaying Discord approval buttons. Chert never retries
 with sandboxing disabled. Sandbox startup errors remain errors until the host or
 configuration is fixed. `PROJECT_ROOT` restricts project selection; Codex's sandbox
 controls command access.
+Discovered sessions keep the original client's sandbox and approval policies;
+attaching Chert doesn't override them.
 
 New categories deny access to `@everyone` and allow the configured owner, bot, and
 explicit allowed users. Discord server administrators retain access. Existing
@@ -145,7 +184,8 @@ Keep `.env`, `private/`, and your Codex credentials out of Git. Back up the sess
 state together with your Codex home to retain resumable conversations. Local per-turn
 logs contain conversation output; remove older files when no longer needed.
 A second bridge using the same state file is rejected. On service restart, active
-turn subprocesses are stopped by systemd and their sessions can be resumed.
+bot-created turn subprocesses are stopped by systemd and their sessions can be resumed.
+Existing sessions in the separate Codex daemon keep running and are rediscovered.
 
 To change an existing upstream installation, set `CHERT_BACKEND=codex`, install and
 log into Codex, then run `./setup.sh --backend codex`. It provisions `#codex` and

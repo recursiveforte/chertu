@@ -4,7 +4,7 @@ No Discord dependency: process lifecycle and session recovery can be tested offl
 Prompts go through stdin; every follow-up resumes an explicit Codex thread ID.
 """
 import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import os
 from pathlib import Path
@@ -23,6 +23,10 @@ class Session:
     effort: str = ''
     status: str = 'idle'
     turns: int = 0
+    backend: str = 'exec'
+    seen_live_items: list[str] = field(default_factory=list)
+    active_turn: str | None = None
+    status_message: int | None = None
 
 
 class SessionStore:

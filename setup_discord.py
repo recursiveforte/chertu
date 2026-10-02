@@ -54,7 +54,7 @@ CLAUDE_CHANNELS = [
 ]
 CODEX_CHANNELS = [
     ('codex', 'DISCORD_CHANNEL_ID',
-     'Chert · start with /codex <prompt>, then reply in the session thread to continue.'),
+     'Chert · type a prompt here to start a session. Existing Codex sessions appear automatically; reply in their threads to talk to them.'),
 ]
 
 

@@ -16,19 +16,22 @@ import discord
 from discord import app_commands
 
 from codex_backend import CodexRunner, Session, SessionStore, project_path
+from codex_live import LiveCodex, RpcError, discoverable, live_status
 
 LOG = logging.getLogger(__name__)
 NO_MENTIONS = discord.AllowedMentions.none()
 EFFORTS = ('minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 HELP = (
     '**Chert · Codex**\n'
-    '`/codex prompt [project]` starts a session; reply in its thread to continue.\n'
+    'Type a prompt in the main channel to start a session; reply in its thread to continue.\n'
+    'Existing Codex sessions appear automatically. `/codex prompt [project]` selects a project.\n'
     '`/sessions` lists sessions; `/resume session [project]` attaches a Codex session ID.\n'
     'In a session: `/stop`, `/kill`, `/rename name`, `/model name`, `/effort level`.\n'
     'Text alternatives: `!codex prompt`, `!sessions`, `!stop`, `!kill`, `!rename name`, '
-    '`!model name`, `!effort level`, `!help`. Mention me in the main channel to start.\n'
+    '`!model name`, `!effort level`, `!help`. No mention is needed.\n'
     'Replies received during a turn are queued. `/stop` clears the queue and stops the turn. '
-    'The next message resumes the same conversation. Model/effort changes apply next turn.'
+    'Replies to a discovered live session steer its active turn directly. '
+    'Model/effort changes apply next turn.'
 )
 
 
@@ -42,6 +45,9 @@ class Config:
     state_file: Path
     model: str = ''
     effort: str = ''
+    discover: bool = True
+    live_socket: Path | None = None
+    discovery_interval: float = 5
 
     @classmethod
     def from_env(cls):
@@ -55,7 +61,12 @@ class Config:
         return cls(token, channel, int(os.environ.get('DISCORD_OWNER_ID') or 0),
                    {int(x.strip()) for x in os.environ.get('SPAWN_ALLOW_USERS', '').split(',') if x.strip()},
                    root, Path(os.environ.get('CODEX_STATE_FILE') or 'private/codex-state.json'),
-                   os.environ.get('CODEX_MODEL', '').strip(), os.environ.get('CODEX_EFFORT', '').strip())
+                   os.environ.get('CODEX_MODEL', '').strip(), os.environ.get('CODEX_EFFORT', '').strip(),
+                   os.environ.get('CODEX_DISCOVER', '1') != '0',
+                   Path(os.environ.get('CODEX_APP_SERVER_SOCKET') or
+                        str(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex') /
+                            'app-server-control/app-server-control.sock')).expanduser(),
+                   max(1, float(os.environ.get('CODEX_DISCOVERY_INTERVAL') or 5)))
 
 
 class CommandTree(app_commands.CommandTree):
@@ -67,7 +78,7 @@ class CommandTree(app_commands.CommandTree):
 
 
 class CodexBot(discord.Client):
-    def __init__(self, config, runner, store):
+    def __init__(self, config, runner, store, live=None):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents, allowed_mentions=NO_MENTIONS)
@@ -79,6 +90,8 @@ class CodexBot(discord.Client):
         self.workers: dict[int, asyncio.Task] = {}
         self.stopping = set()
         self.session_creation_lock = asyncio.Lock()
+        self.live = live or LiveCodex(config.live_socket or Path.home() / '.codex/app-server-control/app-server-control.sock')
+        self.background_tasks = []
         self.register_commands()
 
     def allowed(self, user_id, channel):
@@ -97,17 +110,148 @@ class CodexBot(discord.Client):
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         self.store.save()
+        self.background_tasks = [asyncio.create_task(self.live_events())]
+        if self.config.discover:
+            self.background_tasks.append(asyncio.create_task(self.discover_loop()))
 
     async def on_ready(self):
         LOG.info('Codex bridge online as %s in #%s', self.user, self.main_channel.name)
 
     async def close(self):
+        for task in self.background_tasks:
+            task.cancel()
+        if self.background_tasks:
+            await asyncio.gather(*self.background_tasks, return_exceptions=True)
+        await self.live.close()
         tasks = list(self.workers.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await super().close()
+
+    async def discover_loop(self):
+        await self.wait_until_ready()
+        warned = False
+        while not self.is_closed():
+            try:
+                await self.live.connect()
+                await self.discover_once()
+                warned = False
+            except (OSError, ConnectionError, RpcError, asyncio.TimeoutError) as exc:
+                if not warned:
+                    LOG.warning('Codex live discovery unavailable; will retry: %s', exc)
+                    warned = True
+            except Exception:
+                LOG.exception('Codex discovery failed; will retry')
+            await asyncio.sleep(self.config.discovery_interval)
+
+    async def discover_once(self):
+        threads = await self.live.loaded_threads()
+        loaded_ids = {t['id'] for t in threads}
+        for info in threads:
+            if not discoverable(info):
+                continue
+            async with self.session_creation_lock:
+                session = next((s for s in self.store.sessions.values() if s.codex_thread == info['id']), None)
+                if session is not None and (session.status == 'ended' or session.discord_thread in self.workers):
+                    continue  # Don't mirror our own exec output twice or revive killed threads.
+                if session is None:
+                    title = info.get('name') or info.get('agentNickname') or Path(info['cwd']).name or 'Codex'
+                    thread = await self.main_channel.create_thread(
+                        name=f'Codex · {title}'[:100], type=discord.ChannelType.public_thread,
+                        auto_archive_duration=1440)
+                    session = Session(thread.id, info['cwd'], title, info['id'],
+                                      status=live_status(info), backend='app-server')
+                    self.store.sessions[thread.id] = session
+                    self.store.save()  # Record the mapping before subscribing to notifications.
+                    card = await self.say(thread,
+                        f'**Codex · {title}** · `{info["cwd"]}`\n'
+                        f'**{session.status}** · Discovered an existing session. Reply here to talk to it; '
+                        'your terminal and Discord share the same conversation.')
+                    session.status_message = card.id
+                    self.store.save()
+                    LOG.info('Discovered Codex session %s → Discord thread %s', info['id'], thread.id)
+                elif session.backend != 'app-server':
+                    session.backend = 'app-server'
+                    self.store.save()
+                await self.live.attach(info['id'])
+                if session.status != live_status(info):
+                    session.status = live_status(info)
+                    self.store.save()
+                    await self.update_live_status(session)
+        for session in list(self.store.sessions.values()):
+            if session.backend == 'app-server' and session.status != 'ended' and session.codex_thread not in loaded_ids:
+                if session.status != 'disconnected':
+                    session.status = 'disconnected'
+                    self.store.save()
+                    await self.update_live_status(session)
+                self.live.subscribed.discard(session.codex_thread)
+
+    async def live_channel(self, session):
+        channel = self.get_channel(session.discord_thread) or await self.fetch_channel(session.discord_thread)
+        if channel.archived:
+            await channel.edit(archived=False)
+        return channel
+
+    async def update_live_status(self, session):
+        if session.status_message is None:
+            return
+        channel = await self.live_channel(session)
+        await channel.get_partial_message(session.status_message).edit(
+            content=f'**Codex · {session.name}** · `{session.cwd}`\n'
+                    f'**{session.status}** · Reply here to talk to this existing session.',
+            allowed_mentions=NO_MENTIONS)
+
+    async def live_events(self):
+        await self.wait_until_ready()
+        while not self.is_closed():
+            event = await self.live.notifications.get()
+            try:
+                await self.handle_live_event(event)
+            except Exception:
+                LOG.exception('Could not mirror Codex event to Discord')
+            finally:
+                self.live.notifications.task_done()
+
+    async def handle_live_event(self, event):
+        method, params = event['method'], event.get('params') or {}
+        session = next((s for s in self.store.sessions.values()
+                        if s.backend == 'app-server' and s.codex_thread == params.get('threadId')
+                        and s.status != 'ended'), None)
+        if session is None:
+            return
+        if method == 'item/completed':
+            item = params.get('item') or {}
+            key = f'{params.get("turnId", "")}:{item.get("id", "")}'
+            if item.get('type') != 'agentMessage' or not item.get('text') or key in session.seen_live_items:
+                return
+            await self.say(await self.live_channel(session), item['text'])
+            session.seen_live_items = (session.seen_live_items + [key])[-256:]
+            self.store.save()
+        elif method in {'turn/started', 'turn/completed'}:
+            turn = params['turn']
+            if method == 'turn/started':
+                session.active_turn, session.status = turn['id'], 'running'
+            else:
+                key = f'completed:{turn["id"]}'
+                if key in session.seen_live_items:
+                    return
+                session.seen_live_items = (session.seen_live_items + [key])[-256:]
+                if turn['status'] == 'completed':
+                    session.turns += 1
+                session.active_turn = None
+                session.status = 'error' if turn['status'] == 'failed' else 'idle'
+                if turn.get('error'):
+                    await self.say(await self.live_channel(session), f'Codex turn failed: {turn["error"].get("message", "unknown error")}')
+            self.store.save()
+            await self.update_live_status(session)
+        elif method == 'chert/inputRequired':
+            await self.say(await self.live_channel(session), 'Codex needs approval or input in the original Codex client.')
+        elif method == 'thread/status/changed':
+            session.status = live_status({'status': params['status']})
+            self.store.save()
+            await self.update_live_status(session)
 
     async def say(self, channel, text):
         text = str(text).strip() or '(No text returned.)'
@@ -164,6 +308,19 @@ class CodexBot(discord.Client):
         if not queued:
             self.workers[thread.id] = asyncio.create_task(self.work(thread, session))
         return queued
+
+    async def send_prompt(self, thread, prompt):
+        session = self.store.sessions[thread.id]
+        if session.status == 'ended':
+            raise ValueError('Session ended. Use /resume to reopen it.')
+        if session.backend == 'app-server':
+            if thread.id in self.stopping:
+                raise ValueError('This session is stopping; try again once it stops.')
+            result = await self.live.submit(session, prompt)
+            session.status = 'running'
+            self.store.save()
+            return '↪️' if result == 'steered' else '👀'
+        return '⏳' if self.enqueue(thread, prompt) else '👀'
 
     async def work(self, thread, session):
         queue = self.queues[thread.id]
@@ -230,6 +387,8 @@ class CodexBot(discord.Client):
             raise ValueError('This session is already stopping.')
         self.stopping.add(thread.id)
         try:
+            if session.backend == 'app-server':
+                await self.live.interrupt(session.codex_thread)
             worker = self.workers.pop(thread.id, None)
             if worker:
                 worker.cancel()
@@ -247,7 +406,7 @@ class CodexBot(discord.Client):
         rows = [f'<#{s.discord_thread}> · **{s.status}** · {s.turns} turns'
                 + (f' · `{s.codex_thread}`' if s.codex_thread else '')
                 for s in self.store.sessions.values()]
-        return '\n'.join(rows[-40:]) or 'No sessions yet. Use /codex to start one.'
+        return '\n'.join(rows[-40:]) or 'No sessions yet. Type a prompt in the main channel to start.'
 
     async def control(self, channel, command, value=''):
         if command == 'help':
@@ -321,7 +480,7 @@ class CodexBot(discord.Client):
         @self.tree.error
         async def on_error(interaction, error):
             cause = getattr(error, 'original', error)
-            if isinstance(cause, ValueError):
+            if isinstance(cause, (ValueError, RpcError)):
                 message = str(cause)
             else:
                 LOG.error('Discord command failed: %s', error, exc_info=error)
@@ -353,15 +512,21 @@ class CodexBot(discord.Client):
                     # Preserve attribution for explicitly allowed collaborators.
                     if message.author.id != self.owner:
                         content = f'{message.author.display_name}: {content}'
-                    queued = self.enqueue(message.channel, content)
-                    await message.add_reaction('⏳' if queued else '👀')
-            elif self.user in message.mentions and message.channel.id == self.config.channel_id:
-                prompt = re.sub(rf'<@!?{self.user.id}>', '', content).strip()
+                    reaction = await self.send_prompt(message.channel, content)
+                    await message.add_reaction(reaction)
+            elif message.channel.id == self.config.channel_id:
+                prompt = re.sub(rf'<@!?{self.user.id}>', '', content).strip() if self.user else content
+                if message.attachments:
+                    await self.say(message.channel, 'Attachments are not imported. Put files in the project directory and include their paths.')
                 if prompt:
                     thread = await self.start_session(prompt)
                     await self.say(message.channel, f'Continue in {thread.mention}')
-        except ValueError as exc:
+        except (ValueError, RpcError) as exc:
             await self.say(message.channel, str(exc))
+        except (OSError, ConnectionError, asyncio.TimeoutError):
+            await self.say(message.channel,
+                'The Codex connection was interrupted. Check the original session before resending; '
+                'your message may already have reached it.')
 
 
 def main():

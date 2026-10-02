@@ -24,6 +24,10 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.thread.id, self.thread.parent_id = 20, 10
         self.thread.send = AsyncMock(return_value=SimpleNamespace(edit=AsyncMock()))
         self.thread.edit = AsyncMock()
+        self.thread.archived = False
+        self.thread.mention = '<#20>'
+        self.thread.send.return_value.id = 100
+        self.thread.get_partial_message = Mock(return_value=SimpleNamespace(edit=AsyncMock()))
 
     async def asyncTearDown(self):
         await self.bot.close()
@@ -147,6 +151,77 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         loaded = SessionStore(self.store.path).sessions[20]
         self.assertEqual(loaded.codex_thread, '11111111-1111-4111-8111-111111111111')
         self.assertEqual(loaded.turns, 1)
+
+    async def test_plain_main_channel_prompt_starts_session_without_mention(self):
+        self.bot.start_session = AsyncMock(return_value=self.thread)
+        channel = SimpleNamespace(id=10, send=AsyncMock())
+        message = SimpleNamespace(author=SimpleNamespace(id=1, bot=False), channel=channel,
+                                  content='Please explain the project', attachments=[], mentions=[])
+        await self.bot.on_message(message)
+        self.bot.start_session.assert_awaited_once_with('Please explain the project')
+
+    async def test_main_channel_ignores_bots_and_unauthorized_users(self):
+        self.bot.start_session = AsyncMock()
+        channel = SimpleNamespace(id=10, send=AsyncMock())
+        for author in [SimpleNamespace(id=1, bot=True), SimpleNamespace(id=999, bot=False)]:
+            await self.bot.on_message(SimpleNamespace(author=author, channel=channel, content='test'))
+        self.bot.start_session.assert_not_called()
+
+    def set_up_live(self):
+        info = {'id': 'external', 'cwd': '/existing-project-outside-spawn-root', 'name': 'Existing session',
+                'source': 'vscode', 'status': {'type': 'active'}}
+        self.bot.live = SimpleNamespace(loaded_threads=AsyncMock(return_value=[info]),
+                                       attach=AsyncMock(), close=AsyncMock(), submit=AsyncMock(return_value='steered'),
+                                       interrupt=AsyncMock(), subscribed=set())
+        self.bot.main_channel = SimpleNamespace(create_thread=AsyncMock(return_value=self.thread))
+        self.bot.fetch_channel = AsyncMock(return_value=self.thread)
+        return info
+
+    async def test_discovery_creates_one_thread_and_persists_mapping_across_restart(self):
+        self.store.sessions.clear()
+        self.set_up_live()
+        await self.bot.discover_once()
+        await self.bot.discover_once()
+        self.bot.main_channel.create_thread.assert_awaited_once()
+        saved = SessionStore(self.store.path).sessions[20]
+        self.assertEqual(saved.codex_thread, 'external')
+        self.assertEqual(saved.backend, 'app-server')
+        self.bot.store = SessionStore(self.store.path)
+        await self.bot.discover_once()
+        self.bot.main_channel.create_thread.assert_awaited_once()
+        self.runner.run.assert_not_called()
+
+    async def test_live_replies_and_stop_control_original_session_without_exec(self):
+        self.store.sessions.clear()
+        self.set_up_live()
+        await self.bot.discover_once()
+        self.assertEqual(await self.bot.send_prompt(self.thread, 'follow-up'), '↪️')
+        self.bot.live.submit.assert_awaited_once()
+        self.runner.run.assert_not_called()
+        await self.bot.stop(self.thread, end=True)
+        self.bot.live.interrupt.assert_awaited_once_with('external')
+        await self.bot.discover_once()
+        self.assertEqual(self.store.sessions[20].status, 'ended')
+        self.bot.main_channel.create_thread.assert_awaited_once()
+
+    async def test_live_output_is_mirrored_once_and_reasoning_is_not_posted(self):
+        self.store.sessions.clear()
+        self.set_up_live()
+        await self.bot.discover_once()
+        self.thread.send.reset_mock()
+        event = {'method': 'item/completed', 'params': {'threadId': 'external', 'turnId': 'turn1',
+                 'item': {'id': 'item1', 'type': 'agentMessage', 'text': 'Hello @everyone'}}}
+        await self.bot.handle_live_event(event)
+        await self.bot.handle_live_event(event)
+        event['params']['item'] = {'id': 'private', 'type': 'reasoning', 'text': 'Not public output'}
+        await self.bot.handle_live_event(event)
+        self.thread.send.assert_awaited_once()
+        self.assertEqual(self.thread.send.call_args.args[0], 'Hello @everyone')
+        self.assertIs(self.thread.send.call_args.kwargs['allowed_mentions'], NO_MENTIONS)
+        self.bot.store = SessionStore(self.store.path)
+        event['params']['item'] = {'id': 'item1', 'type': 'agentMessage', 'text': 'Hello @everyone'}
+        await self.bot.handle_live_event(event)
+        self.thread.send.assert_awaited_once()
 
 
 if __name__ == '__main__':
