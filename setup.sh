@@ -56,6 +56,12 @@ from pathlib import Path
 from dotenv import dotenv_values
 from setup_discord import ENV, read_env, write_env
 backend = sys.argv[1]
+previous = read_env()
+previous_backend = previous.get('CHERT_BACKEND') or 'claude'
+if previous.get('DISCORD_CHANNEL_ID') and previous_backend in {'claude', 'codex'}:
+    key = 'DISCORD_CLAUDE_CHANNEL_ID' if previous_backend == 'claude' else 'DISCORD_CODEX_CHANNEL_ID'
+    if not previous.get(key):
+        write_env({key: previous['DISCORD_CHANNEL_ID']})
 if not ENV.exists():
     example = Path('docs/claude.env.example' if backend == 'claude' else '.env.example')
     # Omit blank options so defaults work (int("") and Path("") don't).

@@ -4,11 +4,31 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
+import discord
+from types import SimpleNamespace
 
 import setup_discord
 
 
 class SetupTests(unittest.TestCase):
+    def test_existing_channel_id_survives_user_category_changes(self):
+        channel = Mock(spec=discord.TextChannel)
+        channel.id, channel.name = 123, 'codex'
+        guild = SimpleNamespace(get_channel=Mock(return_value=channel))
+        category = SimpleNamespace(text_channels=[])
+        found = setup_discord.existing_channel(guild, category, 'codex', 'DISCORD_CODEX_CHANNEL_ID',
+                                               {'DISCORD_CODEX_CHANNEL_ID': '123'})
+        self.assertIs(found, channel)
+
+    def test_legacy_codex_id_is_reused_during_dual_backend_migration(self):
+        channel = Mock(spec=discord.TextChannel)
+        channel.id, channel.name = 123, 'codex'
+        guild = SimpleNamespace(get_channel=Mock(return_value=channel))
+        found = setup_discord.existing_channel(guild, SimpleNamespace(text_channels=[]), 'codex',
+                                               'DISCORD_CODEX_CHANNEL_ID', {'DISCORD_CHANNEL_ID': '123'})
+        self.assertIs(found, channel)
+
     def test_backend_channels(self):
         self.assertEqual(setup_discord.channels_for('codex')[0][0], 'codex')
         self.assertEqual(len(setup_discord.channels_for('claude')), 3)

@@ -81,6 +81,21 @@ def read_env():
     return dict(dotenv_values(ENV)) if ENV.exists() else {}
 
 
+def existing_channel(guild, category, name, key, env):
+    """Configured IDs outrank names/categories: users may reorganize their server."""
+    channel_id = env.get(key)
+    if not channel_id and key == 'DISCORD_CODEX_CHANNEL_ID' and env.get('DISCORD_CHANNEL_ID'):
+        legacy = guild.get_channel(int(env['DISCORD_CHANNEL_ID']))
+        if isinstance(legacy, discord.TextChannel) and legacy.name == 'codex':
+            channel_id = legacy.id
+    if channel_id:
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            raise ValueError(f'Configured {key} is missing or inaccessible; update the ID before provisioning.')
+        return channel
+    return discord.utils.get(category.text_channels, name=name)
+
+
 def write_env(updates):
     """Set KEY=value lines in .env in place (keeps comments/order; appends missing keys)."""
     lines = ENV.read_text().splitlines() if ENV.exists() else []
@@ -201,8 +216,9 @@ async def build(token, want_guild, check_only, backend='codex'):
                         read_message_history=True, use_application_commands=True)
                 cat = await g.create_category('chert', overwrites=overwrites)
             updates = {}
+            env = read_env()
             for name, key, topic in channels:
-                ch = discord.utils.get(cat.text_channels, name=name)
+                ch = existing_channel(g, cat, name, key, env)
                 if ch is None:
                     ch = await g.create_text_channel(name, category=cat, topic=topic)
                     print(f"  created #{name} ({ch.id})")
