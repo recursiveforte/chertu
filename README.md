@@ -19,6 +19,12 @@ conversation with your terminal or editor.
 
 - A plain prompt in `#codex` creates a Discord thread and a Codex session.
   `/codex prompt [project]` is an optional way to choose a project.
+- The thread is attached directly to your prompt, like upstream Chert, with 🚀/📡
+  reactions and a `🚀 prompt-slug` title. There is no separate “Continue in…” post
+  in the channel. Replies and activity updates use the original project/session
+  webhook identity and a stable robot avatar; turn recaps include elapsed time.
+- Like upstream, a leading project directory name selects that project:
+  `my-project fix the failing test`. Otherwise the prompt runs in `PROJECT_ROOT`.
 - Existing user-facing sessions loaded in the local Codex daemon get threads
   automatically, including sessions already running when the bridge starts.
   Their new assistant messages are mirrored into Discord. Internal subagents,
@@ -114,7 +120,8 @@ in `CODEX_BIN`. Run `codex login` as the same user, with the same `CODEX_HOME` i
 
 Text commands: `!codex <prompt>`, `!sessions`, `!stop`, `!kill`, `!rename <name>`,
 `!model <name>`, `!effort <level>`, and `!help`. Plain messages in `#codex` start
-new sessions; mentions also work. Use `/codex` to choose a project and `/resume` to attach an ID.
+new sessions attached to that message; mentions also work. A leading project directory
+name selects a project, or use `/codex` to choose one explicitly. `/resume` attaches an ID.
 Attachments aren't imported; put files in the project directory and refer to their paths.
 
 ## Automatic discovery

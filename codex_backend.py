@@ -27,6 +27,10 @@ class Session:
     seen_live_items: list[str] = field(default_factory=list)
     active_turn: str | None = None
     status_message: int | None = None
+    status_webhook: bool = False
+    source_message: int | None = None
+    turn_started: float = 0
+    display_model: str = ''
 
 
 class SessionStore:

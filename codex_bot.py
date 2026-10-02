@@ -17,6 +17,7 @@ from discord import app_commands
 
 from codex_backend import CodexRunner, Session, SessionStore, project_path
 from codex_live import LiveCodex, RpcError, discoverable, live_status
+from codex_presentation import activity_text, avatar_url, prompt_name, speaker_name, thread_title
 
 LOG = logging.getLogger(__name__)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -92,6 +93,8 @@ class CodexBot(discord.Client):
         self.session_creation_lock = asyncio.Lock()
         self.live = live or LiveCodex(config.live_socket or Path.home() / '.codex/app-server-control/app-server-control.sock')
         self.background_tasks = []
+        self.webhook = None
+        self.webhook_lock = asyncio.Lock()
         self.register_commands()
 
     def allowed(self, user_id, channel):
@@ -106,6 +109,7 @@ class CodexBot(discord.Client):
             raise ValueError('DISCORD_CHANNEL_ID must point to a server text channel.')
         guild = await self.fetch_guild(self.main_channel.guild.id)
         self.owner = self.config.owner_id or guild.owner_id
+        await self.webhook_for()
         # Guild-scoped registration makes commands available immediately in this server.
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -159,7 +163,7 @@ class CodexBot(discord.Client):
                 if session is None:
                     title = info.get('name') or info.get('agentNickname') or Path(info['cwd']).name or 'Codex'
                     thread = await self.main_channel.create_thread(
-                        name=f'Codex · {title}'[:100], type=discord.ChannelType.public_thread,
+                        name=thread_title(title), type=discord.ChannelType.public_thread,
                         auto_archive_duration=1440)
                     session = Session(thread.id, info['cwd'], title, info['id'],
                                       status=live_status(info), backend='app-server')
@@ -170,10 +174,22 @@ class CodexBot(discord.Client):
                         f'**{session.status}** · Discovered an existing session. Reply here to talk to it; '
                         'your terminal and Discord share the same conversation.')
                     session.status_message = card.id
+                    session.status_webhook = True
                     self.store.save()
                     LOG.info('Discovered Codex session %s → Discord thread %s', info['id'], thread.id)
                 elif session.backend != 'app-server':
                     session.backend = 'app-server'
+                    self.store.save()
+                if info.get('model') and session.display_model != info['model']:
+                    session.display_model = info['model']
+                    self.store.save()
+                if not session.status_webhook:
+                    # Upgrade the old bot-authored status card once, without
+                    # recreating the thread or replaying the conversation.
+                    channel = await self.live_channel(session)
+                    await channel.edit(name=thread_title(session.name))
+                    card = await self.say(channel, activity_text(session, session.status, session.turn_started))
+                    session.status_message, session.status_webhook = card.id, True
                     self.store.save()
                 await self.live.attach(info['id'])
                 if session.status != live_status(info):
@@ -198,10 +214,14 @@ class CodexBot(discord.Client):
         if session.status_message is None:
             return
         channel = await self.live_channel(session)
-        await channel.get_partial_message(session.status_message).edit(
-            content=f'**Codex · {session.name}** · `{session.cwd}`\n'
-                    f'**{session.status}** · Reply here to talk to this existing session.',
-            allowed_mentions=NO_MENTIONS)
+        content = activity_text(session, session.status, session.turn_started)
+        if session.status_webhook:
+            webhook = await self.webhook_for()
+            await webhook.edit_message(session.status_message, content=content,
+                                       thread=channel, allowed_mentions=NO_MENTIONS)
+        else:
+            await channel.get_partial_message(session.status_message).edit(
+                content=content, allowed_mentions=NO_MENTIONS)
 
     async def live_events(self):
         await self.wait_until_ready()
@@ -233,6 +253,7 @@ class CodexBot(discord.Client):
             turn = params['turn']
             if method == 'turn/started':
                 session.active_turn, session.status = turn['id'], 'running'
+                session.turn_started = time.time()
             else:
                 key = f'completed:{turn["id"]}'
                 if key in session.seen_live_items:
@@ -253,24 +274,52 @@ class CodexBot(discord.Client):
             self.store.save()
             await self.update_live_status(session)
 
+    async def webhook_for(self):
+        async with self.webhook_lock:
+            if self.webhook is None:
+                hooks = await self.main_channel.webhooks()
+                self.webhook = next((w for w in hooks if w.name == 'chert-codex' and w.token), None)
+                if self.webhook is None:
+                    self.webhook = await self.main_channel.create_webhook(name='chert-codex')
+            return self.webhook
+
     async def say(self, channel, text):
         text = str(text).strip() or '(No text returned.)'
+        session = self.store.sessions.get(channel.id)
+
+        async def send(content, **kwargs):
+            if session is None:
+                return await channel.send(content, **kwargs, allowed_mentions=NO_MENTIONS, suppress_embeds=True)
+            webhook = await self.webhook_for()
+            try:
+                return await webhook.send(content, **kwargs, thread=channel,
+                                          username=speaker_name(session), avatar_url=avatar_url(session),
+                                          allowed_mentions=NO_MENTIONS, suppress_embeds=True, wait=True)
+            except discord.NotFound:
+                # A deleted webhook can be recreated without losing a session.
+                self.webhook = None
+                webhook = await self.webhook_for()
+                return await webhook.send(content, **kwargs, thread=channel,
+                                          username=speaker_name(session), avatar_url=avatar_url(session),
+                                          allowed_mentions=NO_MENTIONS, suppress_embeds=True, wait=True)
+
         if len(text) > 12000:
-            return await channel.send('Response attached.', file=discord.File(
-                io.BytesIO(text.encode()), filename='codex-response.txt'), allowed_mentions=NO_MENTIONS)
+            return await send('Response attached.', file=discord.File(
+                io.BytesIO(text.encode()), filename='codex-response.txt'))
         result = None
         for offset in range(0, len(text), 1900):
-            result = await channel.send(text[offset:offset + 1900], allowed_mentions=NO_MENTIONS,
-                                        suppress_embeds=True)
+            result = await send(text[offset:offset + 1900])
         return result
 
-    async def start_session(self, prompt, project='', codex_id=None):
+    async def start_session(self, prompt, project='', codex_id=None, source_message=None):
         # Two simultaneous /resume commands must not attach the same Codex ID twice.
         async with self.session_creation_lock:
-            return await self._start_session(prompt, project, codex_id)
+            return await self._start_session(prompt, project, codex_id, source_message)
 
-    async def _start_session(self, prompt, project='', codex_id=None):
+    async def _start_session(self, prompt, project='', codex_id=None, source_message=None):
         cwd = project_path(self.config.project_root, project)
+        if source_message and source_message.id in self.store.sessions:
+            return await self.fetch_channel(source_message.id)
         if codex_id:
             codex_id = str(uuid.UUID(codex_id))
             old = next((s for s in self.store.sessions.values() if s.codex_thread == codex_id), None)
@@ -281,18 +330,47 @@ class CodexBot(discord.Client):
                     old.status = 'idle'
                     self.store.save()
                 return thread
-        title = (' '.join(prompt.split()) or f'Codex {codex_id}')[:90]
-        thread = await self.main_channel.create_thread(name=title, type=discord.ChannelType.public_thread,
-                                                       auto_archive_duration=1440)
+        title = prompt_name(prompt) if prompt else f'codex-{codex_id[:8]}'
+        if source_message:
+            await source_message.add_reaction('🚀')
+            try:
+                thread = await source_message.create_thread(name=thread_title(title), auto_archive_duration=10080)
+            except discord.HTTPException:
+                await source_message.add_reaction('❌')
+                raise
+        else:
+            thread = await self.main_channel.create_thread(name=thread_title(title), type=discord.ChannelType.public_thread,
+                                                           auto_archive_duration=10080)
         session = Session(thread.id, str(cwd), title, codex_id,
                           self.config.model, self.config.effort)
+        session.source_message = source_message.id if source_message else None
         self.store.sessions[thread.id] = session
         self.store.save()
-        await self.say(thread, f'**Codex** · `{cwd}`\nReply here to continue. `/stop` interrupts; `/help` lists commands.')
+        await self.say(thread, f'**{title}** · `{cwd.name}`\nReply to talk · `!stop` · `!help`')
         if prompt:
-            await self.say(thread, prompt)
+            if source_message is None:
+                await self.say(thread, prompt)
             self.enqueue(thread, prompt)
+            if source_message:
+                await source_message.add_reaction('📡')
         return thread
+
+    async def launch_message(self, message, prompt):
+        project = ''
+        words = prompt.split(maxsplit=1)
+        if len(words) == 2:
+            first, rest = words
+            try:
+                project_path(self.config.project_root, first)
+            except ValueError:
+                pass
+            else:
+                project, prompt = first, rest.strip()
+        if message.channel.id == self.config.channel_id:
+            await self.start_session(prompt, project=project, source_message=message)
+        else:
+            thread = await self.start_session(prompt, project=project)
+            await self.say(message.channel, f'Continue in {thread.mention}')
 
     def enqueue(self, thread, prompt):
         session = self.store.sessions[thread.id]
@@ -320,7 +398,7 @@ class CodexBot(discord.Client):
             session.status = 'running'
             self.store.save()
             return '↪️' if result == 'steered' else '👀'
-        return '⏳' if self.enqueue(thread, prompt) else '👀'
+        return '⏳' if self.enqueue(thread, prompt) else '🤔'
 
     async def work(self, thread, session):
         queue = self.queues[thread.id]
@@ -328,8 +406,9 @@ class CodexBot(discord.Client):
             while queue:
                 prompt = queue.popleft()
                 session.status = 'running'
+                session.turn_started = time.time()
                 self.store.save()
-                card = await self.say(thread, '⏳ Codex is working…')
+                card = await self.say(thread, activity_text(session, 'running', session.turn_started))
                 last_edit = 0.0
 
                 async def on_event(event):
@@ -344,7 +423,8 @@ class CodexBot(discord.Client):
                     if label and time.monotonic() - last_edit > 3:
                         last_edit = time.monotonic()
                         try:
-                            await card.edit(content=f'⏳ {label}…', allowed_mentions=NO_MENTIONS)
+                            await card.edit(content=activity_text(session, 'running', session.turn_started, label),
+                                            allowed_mentions=NO_MENTIONS)
                         except discord.HTTPException:
                             LOG.warning('Could not update progress in %s', thread.id)
 
@@ -354,9 +434,8 @@ class CodexBot(discord.Client):
                     session.turns += 1
                 self.store.save()
                 tokens = result.usage.get('output_tokens')
-                summary = '✅ Turn complete' if result.ok else '⚠️ Turn failed'
-                if tokens is not None:
-                    summary += f' · {tokens} output tokens'
+                summary = activity_text(session, session.status, session.turn_started,
+                                        f'{tokens} output tokens' if tokens is not None else '')
                 await card.edit(content=summary, allowed_mentions=NO_MENTIONS)
                 if result.text:
                     await self.say(thread, result.text)
@@ -398,7 +477,7 @@ class CodexBot(discord.Client):
             self.store.save()
             await self.say(thread, 'Session ended.' if end else 'Stopped. Queued messages cleared; reply to continue.')
             if end:
-                await thread.edit(archived=True)
+                await thread.edit(name=thread_title(session.name, ended=True), archived=True)
         finally:
             self.stopping.discard(thread.id)
 
@@ -422,7 +501,7 @@ class CodexBot(discord.Client):
             if not value.strip():
                 raise ValueError('Provide a name.')
             session.name = value.strip()[:90]
-            await channel.edit(name=session.name)
+            await channel.edit(name=thread_title(session.name))
         elif command == 'model':
             if value == 'default':
                 session.model = ''
@@ -491,7 +570,7 @@ class CodexBot(discord.Client):
                 await interaction.response.send_message(message, ephemeral=True)
 
     async def on_message(self, message):
-        if message.author.bot or not self.allowed(message.author.id, message.channel):
+        if message.author.bot or getattr(message, 'webhook_id', None) or not self.allowed(message.author.id, message.channel):
             return
         content = message.content.strip()
         try:
@@ -500,8 +579,7 @@ class CodexBot(discord.Client):
                 if command == 'codex':
                     if not value.strip():
                         raise ValueError('Use !codex followed by a prompt.')
-                    thread = await self.start_session(value)
-                    await self.say(message.channel, f'Continue in {thread.mention}')
+                    await self.launch_message(message, value)
                 else:
                     await self.control(message.channel, command, value.strip())
                 return
@@ -519,10 +597,12 @@ class CodexBot(discord.Client):
                 if message.attachments:
                     await self.say(message.channel, 'Attachments are not imported. Put files in the project directory and include their paths.')
                 if prompt:
-                    thread = await self.start_session(prompt)
-                    await self.say(message.channel, f'Continue in {thread.mention}')
+                    await self.launch_message(message, prompt)
         except (ValueError, RpcError) as exc:
             await self.say(message.channel, str(exc))
+        except discord.HTTPException:
+            LOG.exception('Could not create or update the Discord session')
+            await self.say(message.channel, 'Could not open the session thread. Check the bot’s thread and webhook permissions.')
         except (OSError, ConnectionError, asyncio.TimeoutError):
             await self.say(message.channel,
                 'The Codex connection was interrupted. Check the original session before resending; '

@@ -28,6 +28,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.thread.mention = '<#20>'
         self.thread.send.return_value.id = 100
         self.thread.get_partial_message = Mock(return_value=SimpleNamespace(edit=AsyncMock()))
+        self.webhook = SimpleNamespace(send=self.thread.send, edit_message=AsyncMock())
+        self.bot.webhook_for = AsyncMock(return_value=self.webhook)
 
     async def asyncTearDown(self):
         await self.bot.close()
@@ -158,7 +160,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(author=SimpleNamespace(id=1, bot=False), channel=channel,
                                   content='Please explain the project', attachments=[], mentions=[])
         await self.bot.on_message(message)
-        self.bot.start_session.assert_awaited_once_with('Please explain the project')
+        self.bot.start_session.assert_awaited_once_with('Please explain the project', project='', source_message=message)
+        channel.send.assert_not_called()  # No detached-thread link in the parent channel.
 
     async def test_main_channel_ignores_bots_and_unauthorized_users(self):
         self.bot.start_session = AsyncMock()
@@ -166,6 +169,63 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         for author in [SimpleNamespace(id=1, bot=True), SimpleNamespace(id=999, bot=False)]:
             await self.bot.on_message(SimpleNamespace(author=author, channel=channel, content='test'))
         self.bot.start_session.assert_not_called()
+
+    async def test_prompt_creates_native_attached_thread_and_reactions_without_reposting_prompt(self):
+        self.store.sessions.clear()
+        channel = SimpleNamespace(id=10, send=AsyncMock())
+        self.bot.main_channel = SimpleNamespace(create_thread=AsyncMock())
+        message = SimpleNamespace(id=20, author=SimpleNamespace(id=1, bot=False), channel=channel,
+                                  content='is your src on gh?', attachments=[], mentions=[],
+                                  create_thread=AsyncMock(return_value=self.thread), add_reaction=AsyncMock())
+        await self.bot.on_message(message)
+        await asyncio.gather(*list(self.bot.workers.values()))
+        message.create_thread.assert_awaited_once_with(name='🚀 is-your-src-on-gh', auto_archive_duration=10080)
+        self.bot.main_channel.create_thread.assert_not_called()
+        self.assertEqual([call.args[0] for call in message.add_reaction.call_args_list], ['🚀', '📡'])
+        channel.send.assert_not_called()
+        self.assertNotIn(message.content, [c.args[0] for c in self.thread.send.call_args_list])
+        self.assertEqual(self.store.sessions[20].source_message, 20)
+        self.runner.run.assert_awaited_once()
+        self.assertEqual(self.runner.run.call_args.args[1], message.content)
+        for call in self.webhook.send.call_args_list:
+            self.assertIn(' · is-your-src-on-gh', call.kwargs['username'])
+            self.assertIs(call.kwargs['thread'], self.thread)
+            self.assertIn('seed=20', call.kwargs['avatar_url'])
+            self.assertTrue(call.kwargs['wait'])
+
+    async def test_message_launch_recognizes_leading_project_like_upstream(self):
+        (self.bot.config.project_root / 'demo').mkdir()
+        self.bot.start_session = AsyncMock()
+        message = SimpleNamespace(channel=SimpleNamespace(id=10))
+        await self.bot.launch_message(message, 'demo fix this bug')
+        self.bot.start_session.assert_awaited_once_with('fix this bug', project='demo', source_message=message)
+
+    async def test_attached_prompt_is_not_launched_twice(self):
+        message = SimpleNamespace(id=20, create_thread=AsyncMock(), add_reaction=AsyncMock())
+        self.bot.fetch_channel = AsyncMock(return_value=self.thread)
+        result = await self.bot.start_session('hello', source_message=message)
+        self.assertIs(result, self.thread)
+        message.create_thread.assert_not_called()
+        self.runner.run.assert_not_called()
+
+    async def test_webhook_creation_is_serialized_and_reused(self):
+        self.bot.main_channel = SimpleNamespace(webhooks=AsyncMock(return_value=[]),
+                                               create_webhook=AsyncMock(return_value=self.webhook))
+        first, second = await asyncio.gather(CodexBot.webhook_for(self.bot), CodexBot.webhook_for(self.bot))
+        self.assertIs(first, self.webhook)
+        self.assertIs(second, self.webhook)
+        self.bot.main_channel.create_webhook.assert_awaited_once_with(name='chert-codex')
+
+    async def test_legacy_live_status_is_upgraded_once_without_restarting_session(self):
+        self.set_up_live()
+        session = self.store.sessions[20]
+        session.backend, session.codex_thread, session.status_message = 'app-server', 'external', 99
+        await self.bot.discover_once()
+        await self.bot.discover_once()
+        self.assertTrue(session.status_webhook)
+        self.thread.send.assert_awaited_once()
+        self.bot.main_channel.create_thread.assert_not_called()
+        self.runner.run.assert_not_called()
 
     def set_up_live(self):
         info = {'id': 'external', 'cwd': '/existing-project-outside-spawn-root', 'name': 'Existing session',
