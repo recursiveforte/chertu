@@ -1,7 +1,7 @@
 [Unit]
-Description=chert: Discord bridge (one thread per live claude session)
-After=network-online.target chert-tmux.service
-Wants=network-online.target chert-tmux.service
+Description=chert: Discord bridge (Codex or Claude backend)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 User=@USER@
@@ -9,7 +9,8 @@ Group=@USER@
 WorkingDirectory=@APP@
 EnvironmentFile=@APP@/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=@VENV@/bin/python discord_bot.py
+Environment="PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=@VENV@/bin/python chert.py
 Restart=always
 RestartSec=5
 

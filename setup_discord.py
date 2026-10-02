@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Discord side of chert from nothing but the bot token.
+"""Provision Chert's Discord category and channels from a bot token.
 
   ./setup_discord.py            # interactive: invite link, create channels, write ids to .env
   ./setup_discord.py --check    # just log in and show what the bot can see
@@ -12,13 +12,14 @@ What it does
      silently fail without the second one).
   2. Logs in. If the bot is in no server yet, it prints the invite URL and waits for you to
      click it. If it's in several, it asks which one (or use --guild).
-  3. Finds or creates a `chert` category with three text channels —
+  3. Finds or creates a private `chert` category. Codex (default) uses #codex.
+     With --backend claude, it creates three text channels —
        #claudes      one thread per live claude (the main channel)
        #claude-chat  two-way bridge to the claude↔claude bus
        #all-claudes  ask every claude at once; a summarizer claude answers
      — sets their topics, and writes DISCORD_CHANNEL_ID / DISCORD_CHAT_CHANNEL_ID /
      DISCORD_BROADCAST_CHANNEL_ID (and DISCORD_OWNER_ID if blank) into .env.
-Idempotent: run it again and it reuses what exists.
+Idempotent: reuses channels within the category and preserves existing permissions.
 
 Needs: `pip install -r requirements.txt` (discord.py, python-dotenv). The bot must have the
 Message Content intent enabled in the Developer Portal → Bot → Privileged Gateway Intents.
@@ -32,6 +33,8 @@ import re
 import sys
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 try:
     import discord
 except ImportError:
@@ -39,7 +42,7 @@ except ImportError:
 
 HERE = Path(__file__).resolve().parent
 ENV = HERE / ".env"
-CHANNELS = [
+CLAUDE_CHANNELS = [
     ("claudes", "DISCORD_CHANNEL_ID",
      "🔭 chert's signalscope — one thread per live claude on the box. Reply in a thread to talk to that "
      "claude; /claude <prompt> or @chert to launch one; !help for everything."),
@@ -49,17 +52,20 @@ CHANNELS = [
      "🧠 ask EVERY claude at once: a plain message is fanned out, replies are collected and a summarizer "
      "claude answers here. Reply to it / !hub for follow-ups. !all <msg> = plain broadcast."),
 ]
+CODEX_CHANNELS = [
+    ('codex', 'DISCORD_CHANNEL_ID',
+     'Chert · start with /codex <prompt>, then reply in the session thread to continue.'),
+]
+
+
+def channels_for(backend):
+    if backend not in {'codex', 'claude'}:
+        raise ValueError('Backend must be codex or claude')
+    return CODEX_CHANNELS if backend == 'codex' else CLAUDE_CHANNELS
 
 
 def read_env():
-    vals = {}
-    if ENV.exists():
-        for line in ENV.read_text().splitlines():
-            m = re.match(r"^\s*([A-Z_0-9]+)\s*=\s*(.*?)\s*(#.*)?$", line)
-            if m and "=" in line and not line.lstrip().startswith("#"):
-                v = m.group(2).strip().strip('"').strip("'")
-                vals[m.group(1)] = v
-    return vals
+    return dict(dotenv_values(ENV)) if ENV.exists() else {}
 
 
 def write_env(updates):
@@ -78,7 +84,9 @@ def write_env(updates):
     for k, v in updates.items():
         if k not in done:
             out.append(f"{k}={v}")
-    ENV.write_text("\n".join(out) + "\n")
+    fd = os.open(ENV, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as file:
+        file.write("\n".join(out) + "\n")
     os.chmod(ENV, 0o600)
 
 
@@ -108,7 +116,8 @@ def invite_url(app_id):
                                    scopes=("bot", "applications.commands"))
 
 
-async def build(token, want_guild, check_only):
+async def build(token, want_guild, check_only, backend='codex'):
+    channels = channels_for(backend)
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True
@@ -124,7 +133,10 @@ async def build(token, want_guild, check_only):
             if not guilds:
                 print("\nThe bot is not in any server yet. Invite it with this link (it has exactly the\n"
                       "permissions chert needs + the applications.commands scope for slash commands):\n\n"
-                      f"  {invite_url(app_id)}\n\nwaiting up to 10 minutes for the bot to join a server…")
+                      f"  {invite_url(app_id)}\n")
+                if check_only:
+                    return
+                print('waiting up to 10 minutes for the bot to join a server…')
                 for _ in range(120):
                     await asyncio.sleep(5)
                     guilds = list(client.guilds)
@@ -148,17 +160,36 @@ async def build(token, want_guild, check_only):
                 g = guilds[int(pick) - 1]
             print(f"server: {g.name} ({g.id}), owner {g.owner_id}")
             if check_only:
-                for name, key, _ in CHANNELS:
+                for name, key, _ in channels:
                     ch = discord.utils.get(g.text_channels, name=name)
                     print(f"  #{name:<12} {'exists ' + str(ch.id) if ch else 'missing'}")
                 me = g.me
                 missing = [p for p, v in needed_permissions() if v and not getattr(me.guild_permissions, p)]
                 print("  permissions:", "ok" if not missing else "MISSING " + ", ".join(missing))
+                result['checked'] = not missing and all(
+                    discord.utils.get(g.text_channels, name=name) is not None for name, _, _ in channels)
                 return
-            cat = discord.utils.get(g.categories, name="chert") or await g.create_category("chert")
+            cat = discord.utils.get(g.categories, name="chert")
+            if cat is None:
+                # Server administrators retain access to private channels.
+                overwrites = {
+                    g.default_role: discord.PermissionOverwrite(view_channel=False),
+                    g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                     send_messages_in_threads=True),
+                }
+                env = read_env()
+                user_ids = {int(env.get('DISCORD_OWNER_ID') or g.owner_id)}
+                user_ids.update(int(x.strip()) for x in (env.get('SPAWN_ALLOW_USERS') or '').split(',')
+                                if x.strip() and x.strip() != '0')
+                for user_id in user_ids:
+                    member = g.get_member(user_id) or await g.fetch_member(user_id)
+                    overwrites[member] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, send_messages_in_threads=True,
+                        read_message_history=True, use_application_commands=True)
+                cat = await g.create_category('chert', overwrites=overwrites)
             updates = {}
-            for name, key, topic in CHANNELS:
-                ch = discord.utils.get(g.text_channels, name=name)
+            for name, key, topic in channels:
+                ch = discord.utils.get(cat.text_channels, name=name)
                 if ch is None:
                     ch = await g.create_text_channel(name, category=cat, topic=topic)
                     print(f"  created #{name} ({ch.id})")
@@ -171,12 +202,14 @@ async def build(token, want_guild, check_only):
                             pass
                 updates[key] = str(ch.id)
             env = read_env()
+            updates['CHERT_BACKEND'] = backend
             if not env.get("DISCORD_OWNER_ID"):
                 updates["DISCORD_OWNER_ID"] = str(g.owner_id)
             write_env(updates)
             result.update(updates)
             print("\nwrote to .env: " + ", ".join(f"{k}={v}" for k, v in updates.items()))
-            print(f"\nstart the bridge and type  /claude hello  in #{CHANNELS[0][0]}  🔭")
+            command = 'codex' if backend == 'codex' else 'claude'
+            print(f"\nstart the bridge and type  /{command} hello  in #{channels[0][0]}  🔭")
         except discord.Forbidden as e:
             print(f"\nthe bot lacks a permission: {e}. Re-invite it with:\n  {invite_url(client.user.id)}")
         finally:
@@ -197,19 +230,24 @@ def main():
     ap.add_argument("--check", action="store_true", help="only log in and report; change nothing")
     ap.add_argument("--guild", help="server name or id when the bot is in several")
     ap.add_argument("--token", help="bot token (else .env / hidden prompt)")
+    ap.add_argument('--backend', choices=('codex', 'claude'), help='default: CHERT_BACKEND or codex')
     a = ap.parse_args()
     env = read_env()
-    token = a.token or env.get("DISCORD_BOT_TOKEN") or ""
+    backend = a.backend or os.environ.get('CHERT_BACKEND') or env.get('CHERT_BACKEND') or 'codex'
+    token = a.token or os.environ.get('DISCORD_BOT_TOKEN') or env.get("DISCORD_BOT_TOKEN") or ""
     if not token:
         token = getpass.getpass("Discord bot token (hidden; Developer Portal → Bot → Reset Token): ").strip()
         if not token:
             sys.exit("no token")
-        write_env({"DISCORD_BOT_TOKEN": token})
-        print("saved the token to .env (chmod 600)")
+        if not a.check:
+            write_env({"DISCORD_BOT_TOKEN": token})
+            print("saved the token to .env (chmod 600)")
     app_id = app_id_from_token(token)
     if app_id:
         print(f"invite link (also shown if the bot turns out not to be in a server yet):\n  {invite_url(app_id)}\n")
-    asyncio.run(build(token, a.guild, a.check))
+    result = asyncio.run(build(token, a.guild, a.check, backend))
+    if (a.check and not result.get('checked')) or not result:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

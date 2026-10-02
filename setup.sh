@@ -1,97 +1,119 @@
 #!/usr/bin/env bash
-# chert — one-shot installer.  ./setup.sh [--skip-discord] [--no-systemd] [--dry-run]
-#
-# Does, in order (each step is idempotent, re-run freely):
-#   1. checks prerequisites (python3 ≥ 3.11, tmux, claude; codex/modal/aws optional)
-#   2. creates .venv and installs requirements.txt
-#   3. creates .env from .env.example if missing, asks for the Discord bot token (hidden)
-#   4. builds the Discord side: invite link, #claudes / #claude-chat / #all-claudes, ids → .env
-#      (setup_discord.py; skip with --skip-discord if you already filled DISCORD_CHANNEL_ID)
-#   5. installs the CLI helpers into ~/.local/bin (hearth-send, model-check)
-#   6. installs Claude Code hooks into ~/.claude/settings.json (event-driven updates)
-#   7. renders systemd units for YOUR user/paths from systemd/templates and enables them:
-#      chert-tmux (the tmux server claudes live in), chert-discord-bridge, chert-checkin (dashboard)
-#      — needs sudo; with --no-systemd (or no sudo) it writes them to systemd/rendered/ and tells
-#      you what to copy.
+# Install Chert with Codex (default), or --backend claude for the upstream backend.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-APP="$(pwd)"; ME="$(id -un)"; HOME_DIR="$HOME"; VENV="$APP/.venv"
-SKIP_DISCORD=0; NO_SYSTEMD=0; DRY=0
-for a in "$@"; do case "$a" in --skip-discord) SKIP_DISCORD=1;; --no-systemd) NO_SYSTEMD=1;; --dry-run) DRY=1;; -h|--help) sed -n '2,17p' "$0"; exit 0;; esac; done
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-ok()  { printf '  ✓ %s\n' "$*"; }
-warn(){ printf '  ⚠ %s\n' "$*"; }
-run() { if (( DRY )); then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
-
-say "1/7 prerequisites"
-PY="$(command -v python3.12 || command -v python3 || true)"
-[[ -n "$PY" ]] || { echo "python3 not found"; exit 1; }
-"$PY" -c 'import sys; assert sys.version_info >= (3, 11), sys.version' || { echo "need python ≥ 3.11 (found $("$PY" -V))"; exit 1; }
-ok "python: $("$PY" -V 2>&1) at $PY"
-command -v tmux >/dev/null && ok "tmux: $(tmux -V)" || { echo "  ✗ tmux missing — install it (apt install tmux) and re-run"; exit 1; }
-if command -v claude >/dev/null; then ok "claude: $(claude --version 2>/dev/null | head -1)"; else warn "claude not on PATH — install Claude Code first (npm i -g @anthropic-ai/claude-code); the bridge can still start and will watch for sessions"; fi
-command -v codex >/dev/null && ok "codex: $(codex --version 2>/dev/null | head -1)  (Feldspar's second reviewer + Astra sessions)" || warn "codex not found — optional (Feldspar/Astra need it): npm i -g @openai/codex"
-command -v modal >/dev/null && ok "modal cli found (optional)" || true
-command -v aws  >/dev/null && ok "aws cli found (optional, Ash Twin S3 backups)" || true
-
-say "2/7 python venv"
-[[ -d "$VENV" ]] || run "$PY" -m venv "$VENV"
-run "$VENV/bin/pip" install -q --upgrade pip
-run "$VENV/bin/pip" install -q -r requirements.txt
-ok "venv ready at $VENV"
-
-say "3/7 .env"
-if [[ ! -f .env ]]; then run cp .env.example .env; run chmod 600 .env; ok "created .env from .env.example"; else ok ".env exists (left as is)"; fi
-if (( ! DRY )) && ! grep -qE '^DISCORD_BOT_TOKEN=.+' .env; then
-  echo "  Create a bot: https://discord.com/developers/applications → New Application → Bot →"
-  echo "  Reset Token (copy it) → Privileged Gateway Intents → enable MESSAGE CONTENT INTENT → Save."
-  read -rsp "  paste the bot token (hidden): " TOKEN; echo
-  [[ -n "$TOKEN" ]] || { echo "no token; re-run when you have one"; exit 1; }
-  "$PY" - "$TOKEN" <<'PY'
-import re,sys,os
-p=".env"; t=sys.argv[1]; s=open(p).read()
-s=re.sub(r"^DISCORD_BOT_TOKEN=.*$", f"DISCORD_BOT_TOKEN={t}", s, flags=re.M) if re.search(r"^DISCORD_BOT_TOKEN=", s, re.M) else s+f"\nDISCORD_BOT_TOKEN={t}\n"
-open(p,"w").write(s); os.chmod(p,0o600)
-PY
-  ok "token saved (chmod 600)"
-fi
-grep -q '^PYTHONUNBUFFERED=1' .env || echo 'PYTHONUNBUFFERED=1' >> .env
-
-say "4/7 Discord: channels + ids"
-if (( SKIP_DISCORD )); then ok "skipped (--skip-discord)"
-elif (( DRY )); then echo "  [dry-run] would run: $VENV/bin/python setup_discord.py"
-elif grep -qE '^DISCORD_CHANNEL_ID=[0-9]+' .env; then ok "DISCORD_CHANNEL_ID already set — run ./setup_discord.py --check to verify, or ./setup_discord.py to (re)create channels"
-else "$VENV/bin/python" setup_discord.py; fi
-
-say "5/7 CLI helpers → ~/.local/bin"
-mkdir -p "$HOME_DIR/.local/bin"
-for t in bin/*; do run install -m 755 "$t" "$HOME_DIR/.local/bin/$(basename "$t")"; ok "$(basename "$t")"; done
-case ":$PATH:" in *":$HOME_DIR/.local/bin:"*) ;; *) warn "add ~/.local/bin to your PATH (e.g. in ~/.bashrc): export PATH=\"\$HOME/.local/bin:\$PATH\"";; esac
-
-say "6/7 Claude Code hooks (event-driven bridge)"
-if (( DRY )); then echo "  [dry-run] would run hooks/install_hooks.py"; else "$VENV/bin/python" hooks/install_hooks.py && ok "hooks installed into ~/.claude/settings.json (new sessions pick them up)"; fi
-
-say "7/7 systemd units"
-mkdir -p systemd/rendered
-for tpl in systemd/templates/*.service.in; do
-  unit="$(basename "${tpl%.in}")"
-  sed -e "s|@USER@|$ME|g" -e "s|@HOME@|$HOME_DIR|g" -e "s|@APP@|$APP|g" -e "s|@VENV@|$VENV|g" "$tpl" > "systemd/rendered/$unit"
+APP="$(pwd)"
+VENV="$APP/.venv"
+BACKEND="${CHERT_BACKEND:-}"
+SKIP_DISCORD=0
+NO_SYSTEMD=0
+DRY=0
+while (( $# )); do
+  case "$1" in
+    --backend) BACKEND="${2:?--backend needs codex or claude}"; shift ;;
+    --skip-discord) SKIP_DISCORD=1 ;;
+    --no-systemd) NO_SYSTEMD=1 ;;
+    --dry-run) DRY=1 ;;
+    -h|--help)
+      echo 'Usage: ./setup.sh [--backend codex|claude] [--skip-discord] [--no-systemd] [--dry-run]'
+      exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
 done
-ok "rendered $(ls systemd/rendered | wc -l) units for user $ME at $APP → systemd/rendered/"
-if (( NO_SYSTEMD || DRY )) || ! command -v systemctl >/dev/null; then
-  echo "  install them yourself:"; echo "    sudo cp systemd/rendered/*.service /etc/systemd/system/ && sudo systemctl daemon-reload"
-  echo "    sudo systemctl enable --now chert-tmux chert-discord-bridge chert-checkin"
-elif sudo -n true 2>/dev/null || [[ -t 0 ]]; then
-  sudo cp systemd/rendered/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
-  sudo systemctl enable --now chert-tmux chert-discord-bridge chert-checkin
-  sleep 3
-  for u in chert-tmux chert-discord-bridge chert-checkin; do printf '  %-22s %s\n' "$u" "$(systemctl is-active "$u")"; done
-  echo "  logs:  journalctl -u chert-discord-bridge -f"
-else
-  warn "no sudo — units are in systemd/rendered/; copy them as shown above"
+PY="$(command -v python3.12 || command -v python3 || true)"
+[[ -n "$PY" ]] || { echo 'Python 3.11+ is required'; exit 1; }
+"$PY" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required"'
+if (( DRY )); then
+  echo "Would install dependencies, configure ${BACKEND:-the saved backend (default codex)}, and provision Discord."
+  echo 'Would install services unless --no-systemd is set; no files have been changed.'
+  exit 0
 fi
-
-say "done 🔭"
-echo "  • in Discord, #claudes:  /claude hello   (or @mention the bot) → a claude appears as a thread"
-echo "  • !help in any thread lists every command; README.md has the full tour"
-echo "  • dashboard (loopback): http://127.0.0.1:8899/claudes  — put it behind auth before exposing it"
+[[ -d "$VENV" ]] || "$PY" -m venv "$VENV"
+"$VENV/bin/python" -m pip install -q -r requirements.txt
+if [[ -z "$BACKEND" ]]; then
+  BACKEND="$("$VENV/bin/python" -c 'from dotenv import dotenv_values; print(dotenv_values(".env").get("CHERT_BACKEND") or "codex")')"
+fi
+[[ "$BACKEND" == codex || "$BACKEND" == claude ]] || { echo 'Backend must be codex or claude'; exit 1; }
+if [[ "$BACKEND" == codex ]]; then
+  CODEX="${CODEX_BIN:-$("$VENV/bin/python" -c 'from dotenv import dotenv_values; print(dotenv_values(".env").get("CODEX_BIN") or "")')}"
+  [[ -n "$CODEX" ]] || CODEX="$(command -v codex || true)"
+  [[ -n "$CODEX" ]] || CODEX="$HOME/.local/bin/codex"
+  [[ -x "$CODEX" ]] || { echo 'Install the Codex CLI, run codex login, then rerun setup. See README.md.'; exit 1; }
+else
+  command -v tmux >/dev/null || { echo 'Install tmux, then rerun setup.'; exit 1; }
+  command -v claude >/dev/null || { echo 'Install Claude Code and log in, then rerun setup.'; exit 1; }
+fi
+umask 077
+"$VENV/bin/python" - "$BACKEND" "${CODEX:-}" <<'PY'
+import json
+import sys
+import shutil
+from pathlib import Path
+from dotenv import dotenv_values
+from setup_discord import ENV, read_env, write_env
+backend = sys.argv[1]
+if not ENV.exists():
+    example = Path('.env.example' if backend == 'codex' else 'docs/claude.env.example')
+    # Omit blank options so defaults work (int("") and Path("") don't).
+    values = {k: v for k, v in dotenv_values(example).items() if v}
+    write_env({k: json.dumps(v) if any(c.isspace() for c in v) else v for k, v in values.items()})
+write_env({'CHERT_BACKEND': backend, 'PYTHONUNBUFFERED': '1'})
+if backend == 'codex':
+    binary = str(Path(sys.argv[2]).resolve())
+    write_env({'CODEX_BIN': json.dumps(binary)})
+    # npm launchers use /usr/bin/env node; include its stable installation path.
+    node = shutil.which('node')
+    paths = [str(Path.home() / '.local/bin'), str(Path(binary).parent)]
+    if node:
+        paths.append(str(Path(node).resolve().parent))
+    paths += ['/usr/local/bin', '/usr/bin', '/bin']
+    write_env({'PATH': json.dumps(':'.join(dict.fromkeys(paths)))})
+if backend == 'codex' and not read_env().get('PROJECT_ROOT'):
+    projects = Path.home() / 'projects'
+    projects.mkdir(exist_ok=True)
+    write_env({'PROJECT_ROOT': str(projects)})
+PY
+chmod 600 .env
+if (( ! SKIP_DISCORD )); then
+  "$VENV/bin/python" setup_discord.py --backend "$BACKEND"
+fi
+if [[ "$BACKEND" == claude ]]; then
+  mkdir -p "$HOME/.claude" "$HOME/.local/bin"
+  for helper in bin/*; do install -m 755 "$helper" "$HOME/.local/bin/$(basename "$helper")"; done
+  "$VENV/bin/python" hooks/install_hooks.py
+fi
+mkdir -p systemd/rendered
+"$VENV/bin/python" - "$BACKEND" <<'PY'
+import getpass
+import sys
+from pathlib import Path
+root = Path.cwd()
+names = ['chert-discord-bridge']
+if sys.argv[1] == 'claude':
+    names += ['chert-tmux', 'chert-checkin']
+values = {'@USER@': getpass.getuser(), '@HOME@': str(Path.home()), '@APP@': str(root), '@VENV@': str(root / '.venv')}
+for name in names:
+    text = (root / 'systemd/templates' / (name + '.service.in')).read_text()
+    for old, new in values.items():
+        text = text.replace(old, new)
+    if name == 'chert-discord-bridge' and sys.argv[1] == 'claude':
+        text = text.replace('After=network-online.target', 'After=network-online.target chert-tmux.service')
+        text = text.replace('Wants=network-online.target', 'Wants=network-online.target chert-tmux.service')
+    (root / 'systemd/rendered' / (name + '.service')).write_text(text)
+PY
+if (( NO_SYSTEMD )) || ! command -v systemctl >/dev/null; then
+  echo "Configured $BACKEND. Start manually: .venv/bin/python chert.py"
+  exit 0
+fi
+UNITS=(chert-discord-bridge)
+if [[ "$BACKEND" == claude ]]; then UNITS+=(chert-tmux chert-checkin); fi
+for unit in "${UNITS[@]}"; do sudo install -m 644 "systemd/rendered/$unit.service" /etc/systemd/system/; done
+sudo systemctl daemon-reload
+if (( SKIP_DISCORD )); then
+  echo 'Services installed but not started. Configure Discord, then run: sudo systemctl enable --now chert-discord-bridge'
+else
+  sudo systemctl enable "${UNITS[@]}"
+  sudo systemctl restart "${UNITS[@]}"
+  echo "Chert ($BACKEND) started. Logs: journalctl -u chert-discord-bridge -f"
+fi
