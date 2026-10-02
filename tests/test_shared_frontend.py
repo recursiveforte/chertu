@@ -44,6 +44,10 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(original.tree.get_commands()), 34)
         self.assertEqual(len(self.bot.tree.get_commands()), 36)
 
+    def test_discord_gateway_dispatcher_is_not_shadowed_by_command_routing(self):
+        self.assertIs(SharedFrontend.dispatch, discord.Client.dispatch)
+        self.bot.dispatch('socket_event_type', 'READY')
+
     def test_routes_parent_channels_and_threads_to_only_one_backend(self):
         self.assertEqual(self.bot.backend_for(SimpleNamespace(id=100)), 'codex')
         self.assertEqual(self.bot.backend_for(SimpleNamespace(id=200)), 'claude')
@@ -55,7 +59,7 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
         original = AsyncMock()
         self.bot.codex.execute = AsyncMock()
         interaction = self.interaction(100)
-        await self.bot.dispatch('model', original, interaction, {'name': 'test-model'})
+        await self.bot.dispatch_command('model', original, interaction, {'name': 'test-model'})
         original.assert_not_called()
         self.bot.codex.execute.assert_awaited_once()
 
@@ -63,7 +67,7 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
         original = AsyncMock()
         self.bot.codex.execute = AsyncMock()
         interaction = self.interaction(200)
-        await self.bot.dispatch('model', original, interaction, {'name': 'test-model'})
+        await self.bot.dispatch_command('model', original, interaction, {'name': 'test-model'})
         original.assert_awaited_once_with(interaction, name='test-model')
         self.bot.codex.execute.assert_not_called()
 
@@ -72,7 +76,7 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
             interaction = self.interaction(channel)
             interaction.user.id = 999
             original = AsyncMock()
-            await self.bot.dispatch('model', original, interaction, {'name': 'test'})
+            await self.bot.dispatch_command('model', original, interaction, {'name': 'test'})
             original.assert_not_called()
             interaction.response.send_message.assert_awaited_once()
 

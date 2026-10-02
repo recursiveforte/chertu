@@ -242,7 +242,7 @@ class SharedFrontend(upstream.Bridge):
             def routed_callback(callback, command_name):
                 @functools.wraps(callback)
                 async def routed(interaction, **kwargs):
-                    return await self.dispatch(command_name, callback, interaction, kwargs)
+                    return await self.dispatch_command(command_name, callback, interaction, kwargs)
                 return routed
 
             command._callback = routed_callback(original, name)
@@ -276,12 +276,12 @@ class SharedFrontend(upstream.Bridge):
 
         @self.tree.command(name='codex', description='Launch a new Codex session in #codex')
         async def codex(interaction: discord.Interaction, prompt: str, project: str = ''):
-            await self.dispatch('codex', None, interaction, {'prompt': prompt, 'project': project})
+            await self.dispatch_command('codex', None, interaction, {'prompt': prompt, 'project': project})
 
         @self.tree.command(name='stop', description='Interrupt the active turn without ending the conversation')
         async def stop(interaction: discord.Interaction):
             if self.backend_for(interaction.channel) == 'codex':
-                return await self.dispatch('stop', None, interaction, {})
+                return await self.dispatch_command('stop', None, interaction, {})
             return await self.original_commands['key'](interaction, key='esc')
 
         @self.tree.error
@@ -293,7 +293,7 @@ class SharedFrontend(upstream.Bridge):
             else:
                 await interaction.response.send_message(text, ephemeral=True)
 
-    async def dispatch(self, name, original, interaction, kwargs):
+    async def dispatch_command(self, name, original, interaction, kwargs):
         if not self.allowed_user(interaction.user):
             return await interaction.response.send_message('This Chert instance is restricted.', ephemeral=True)
         backend = self.backend_for(interaction.channel)
