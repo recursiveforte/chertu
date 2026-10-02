@@ -47,9 +47,9 @@ async function refresh() {
         <span class="name">${esc(s.name)}</span>
         <span class="chip ${esc(s.status)}">${esc(WORD[s.status] || s.status)}</span>
       </div>
-      <div class="proj">${esc(s.project)} · <span class="ago">${ago(s.updatedAt, data.now)}</span>${s.pane ? '' : ' · 👁️ read-only'}</div>
+      <div class="proj">${esc(s.project)} · <span class="ago">${ago(s.updatedAt, data.now)}</span>${s.pane || s.can_send ? '' : ' · 👁️ read-only'}</div>
       ${s.snippet ? `<div class="snippet">${esc(s.snippet)}</div>` : ''}
-    </a>`).join('') || '<div class="muted pad">🔭 no signals — no live claudes right now</div>';
+    </a>`).join('') || `<div class="muted pad">🔭 no signals — no live ${typeof BACKEND_NAME === 'undefined' ? 'claudes' : esc(BACKEND_NAME)} right now</div>`;
   if (data.dead && data.dead.length) {
     deadWrap.hidden = false;
     deadDiv.innerHTML = data.dead.map(d => `

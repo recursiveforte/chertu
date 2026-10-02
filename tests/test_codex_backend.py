@@ -27,9 +27,22 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'state.json'
             path.write_text('{broken')
-            with self.assertRaises(ValueError):
+            with self.assertRaises((ValueError, OSError)):
                 SessionStore(path)
             self.assertEqual(path.read_text(), '{broken')
+
+    def test_recovers_last_good_state_after_corruption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'state.json'
+            store = SessionStore(path)
+            store.sessions[12] = Session(12, tmp, 'test', 'codex-id')
+            store.save()
+            store.sessions[12].turns = 1
+            store.save()
+            path.write_text('{broken')
+            recovered = SessionStore(path)
+            self.assertEqual(recovered.sessions[12].codex_thread, 'codex-id')
+            self.assertEqual(path.with_suffix('.json.bak').stat().st_mode & 0o777, 0o600)
 
     def test_project_selection_blocks_parent_and_symlink_escapes(self):
         with tempfile.TemporaryDirectory() as tmp:

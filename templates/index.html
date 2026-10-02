@@ -10,7 +10,7 @@
 <body>
 <header class="topbar">
   <img class="logo" src="{{ prefix }}/static/chert.png" alt="Chert"><h1>Signalscope</h1>
-  <span class="subtitle muted">Timber Hearth · every claude on this box</span>
+  <span class="subtitle muted">Timber Hearth · {{ backend_label|default('every claude on this box') }}</span>
   <span id="summary" class="muted"></span>
   <span id="disk" class="disk" title="free space on the transcript disk"></span>
 </header>
@@ -23,6 +23,7 @@
 </main>
 <script>
 const PREFIX = {{ prefix|tojson }};
+const BACKEND_NAME = {{ ('Codex sessions' if prefix == '/codex' else 'claudes')|tojson }};
 </script>
 <script src="{{ prefix }}/static/index.js"></script>
 </body>

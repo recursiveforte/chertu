@@ -1,0 +1,18 @@
+[Unit]
+Description=chert: ensure the shared Codex daemon is running
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@HOME@
+Environment="PATH=@RUNTIME_PATH@"
+Environment="CODEX_HOME=@CODEX_HOME@"
+# Never load .env here: the daemon and its tools must not inherit the bot token.
+ExecStart="@CODEX@" app-server daemon start
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

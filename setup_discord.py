@@ -12,7 +12,9 @@ What it does
      silently fail without the second one).
   2. Logs in. If the bot is in no server yet, it prints the invite URL and waits for you to
      click it. If it's in several, it asks which one (or use --guild).
-  3. Finds or creates a private `chert` category. Codex (default) uses #codex.
+  3. Finds or creates a private `chert` category. Both (default) uses #codex and
+     #claude, plus each backend's ask-all and shared-chat channels.
+     Codex-only uses #codex.
      With --backend claude, it creates three text channels —
        #claudes      one thread per live claude (the main channel)
        #claude-chat  two-way bridge to the claude↔claude bus
@@ -56,11 +58,22 @@ CODEX_CHANNELS = [
     ('codex', 'DISCORD_CHANNEL_ID',
      'Chert · type a prompt here to start a session. Existing Codex sessions appear automatically; reply in their threads to talk to them.'),
 ]
+SHARED_CHANNELS = [
+    ('codex', 'DISCORD_CODEX_CHANNEL_ID', CODEX_CHANNELS[0][2]),
+    ('claude', 'DISCORD_CLAUDE_CHANNEL_ID',
+     'Chert · type a prompt to start Claude. Reply in a session thread to continue.'),
+    ('all-codex', 'DISCORD_CODEX_BROADCAST_CHANNEL_ID',
+     'Ask all Codex sessions; Chert collects their replies and summarizes them. !all sends without a summary.'),
+    ('codex-chat', 'DISCORD_CODEX_CHAT_CHANNEL_ID', 'Shared Codex session chat bus.'),
+    *CLAUDE_CHANNELS[1:],
+]
 
 
 def channels_for(backend):
+    if backend == 'both':
+        return SHARED_CHANNELS
     if backend not in {'codex', 'claude'}:
-        raise ValueError('Backend must be codex or claude')
+        raise ValueError('Backend must be both, codex, or claude')
     return CODEX_CHANNELS if backend == 'codex' else CLAUDE_CHANNELS
 
 
@@ -203,13 +216,18 @@ async def build(token, want_guild, check_only, backend='codex'):
                 updates[key] = str(ch.id)
             env = read_env()
             updates['CHERT_BACKEND'] = backend
+            if backend == 'both':
+                updates['DISCORD_CHANNEL_ID'] = updates['DISCORD_CODEX_CHANNEL_ID']
             if not env.get("DISCORD_OWNER_ID"):
                 updates["DISCORD_OWNER_ID"] = str(g.owner_id)
             write_env(updates)
             result.update(updates)
             print("\nwrote to .env: " + ", ".join(f"{k}={v}" for k, v in updates.items()))
-            command = 'codex' if backend == 'codex' else 'claude'
-            print(f"\nstart the bridge and type  /{command} hello  in #{channels[0][0]}  🔭")
+            if backend == 'both':
+                print('\nstart the bridge and type a prompt in #codex or #claude 🔭')
+            else:
+                command = 'codex' if backend == 'codex' else 'claude'
+                print(f"\nstart the bridge and type  /{command} hello  in #{channels[0][0]}  🔭")
         except discord.Forbidden as e:
             print(f"\nthe bot lacks a permission: {e}. Re-invite it with:\n  {invite_url(client.user.id)}")
         finally:
@@ -230,10 +248,10 @@ def main():
     ap.add_argument("--check", action="store_true", help="only log in and report; change nothing")
     ap.add_argument("--guild", help="server name or id when the bot is in several")
     ap.add_argument("--token", help="bot token (else .env / hidden prompt)")
-    ap.add_argument('--backend', choices=('codex', 'claude'), help='default: CHERT_BACKEND or codex')
+    ap.add_argument('--backend', choices=('both', 'codex', 'claude'), help='default: CHERT_BACKEND or both')
     a = ap.parse_args()
     env = read_env()
-    backend = a.backend or os.environ.get('CHERT_BACKEND') or env.get('CHERT_BACKEND') or 'codex'
+    backend = a.backend or os.environ.get('CHERT_BACKEND') or env.get('CHERT_BACKEND') or 'both'
     token = a.token or os.environ.get('DISCORD_BOT_TOKEN') or env.get("DISCORD_BOT_TOKEN") or ""
     if not token:
         token = getpass.getpass("Discord bot token (hidden; Developer Portal → Bot → Reset Token): ").strip()

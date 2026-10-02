@@ -53,7 +53,7 @@ class Config:
     @classmethod
     def from_env(cls):
         token = os.environ.get('DISCORD_BOT_TOKEN', '').strip()
-        channel = int(os.environ.get('DISCORD_CHANNEL_ID') or 0)
+        channel = int(os.environ.get('DISCORD_CODEX_CHANNEL_ID') or os.environ.get('DISCORD_CHANNEL_ID') or 0)
         if not token or not channel:
             raise ValueError('Run setup_discord.py to set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID.')
         root = Path(os.environ.get('PROJECT_ROOT') or str(Path.home() / 'projects')).expanduser().resolve()
@@ -79,7 +79,7 @@ class CommandTree(app_commands.CommandTree):
 
 
 class CodexBot(discord.Client):
-    def __init__(self, config, runner, store, live=None):
+    def __init__(self, config, runner, store, live=None, register_commands=True):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents, allowed_mentions=NO_MENTIONS)
@@ -95,7 +95,8 @@ class CodexBot(discord.Client):
         self.background_tasks = []
         self.webhook = None
         self.webhook_lock = asyncio.Lock()
-        self.register_commands()
+        if register_commands:
+            self.register_commands()
 
     def allowed(self, user_id, channel):
         in_scope = channel is not None and (
@@ -158,8 +159,17 @@ class CodexBot(discord.Client):
                 continue
             async with self.session_creation_lock:
                 session = next((s for s in self.store.sessions.values() if s.codex_thread == info['id']), None)
-                if session is not None and (session.status == 'ended' or session.discord_thread in self.workers):
-                    continue  # Don't mirror our own exec output twice or revive killed threads.
+                if session is not None and session.status == 'ended':
+                    if not session.ended_seen_absent:
+                        continue  # Ignore a stale in-flight snapshot just after /kill.
+                    # An external client explicitly resumed this conversation after
+                    # it disappeared. Reopen its original Discord thread, as upstream does.
+                    await self.live_channel(session)
+                    session.status = live_status(info)
+                    session.ended_seen_absent = False
+                    self.store.save()
+                if session is not None and session.discord_thread in self.workers:
+                    continue  # Don't mirror our own exec output twice.
                 if session is None:
                     title = info.get('name') or info.get('agentNickname') or Path(info['cwd']).name or 'Codex'
                     thread = await self.main_channel.create_thread(
@@ -183,6 +193,7 @@ class CodexBot(discord.Client):
                 if info.get('model') and session.display_model != info['model']:
                     session.display_model = info['model']
                     self.store.save()
+                await self.observe_session(session, info)
                 if not session.status_webhook:
                     # Upgrade the old bot-authored status card once, without
                     # recreating the thread or replaying the conversation.
@@ -197,12 +208,18 @@ class CodexBot(discord.Client):
                     self.store.save()
                     await self.update_live_status(session)
         for session in list(self.store.sessions.values()):
+            if session.status == 'ended' and session.codex_thread not in loaded_ids and not session.ended_seen_absent:
+                session.ended_seen_absent = True
+                self.store.save()
             if session.backend == 'app-server' and session.status != 'ended' and session.codex_thread not in loaded_ids:
                 if session.status != 'disconnected':
                     session.status = 'disconnected'
                     self.store.save()
                     await self.update_live_status(session)
                 self.live.subscribed.discard(session.codex_thread)
+
+    async def observe_session(self, session, info):
+        return None
 
     async def live_channel(self, session):
         channel = self.get_channel(session.discord_thread) or await self.fetch_channel(session.discord_thread)
@@ -474,6 +491,9 @@ class CodexBot(discord.Client):
                 await asyncio.gather(worker, return_exceptions=True)
             self.queues.pop(thread.id, None)
             session.status = 'ended' if end else 'idle'
+            if end:
+                session.ended_seen_absent = False
+                session.ended_at = time.time()
             self.store.save()
             await self.say(thread, 'Session ended.' if end else 'Stopped. Queued messages cleared; reply to continue.')
             if end:

@@ -135,4 +135,4 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) (activeTab === 'screen' ? refreshScreen() : refreshChat());
 });
-refreshScreen();
+if (typeof DEFAULT_TAB !== 'undefined') setTab(DEFAULT_TAB); else refreshScreen();

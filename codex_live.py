@@ -4,6 +4,7 @@ The daemon speaks app-server JSON-RPC over a local Unix WebSocket. Discovery onl
 lists loaded threads, rather than replaying the user's entire stored history.
 """
 import asyncio
+import uuid
 from pathlib import Path
 
 import aiohttp
@@ -23,6 +24,9 @@ class LiveCodex:
         self.subscribed = set()
         self.active_turns = {}
         self.completed_turns = set()
+        self.server_requests = {}
+        self.generation = 0
+        self.instance = uuid.uuid4().hex[:8]
         self.connect_lock = asyncio.Lock()
         self.attach_lock = asyncio.Lock()
 
@@ -39,12 +43,13 @@ class LiveCodex:
             return
         await self.close()
         self.http = aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(self.socket)))
+        self.generation += 1
         try:
             self.ws = await self.http.ws_connect('http://localhost', max_msg_size=16 * 1024 * 1024)
             self.reader = asyncio.create_task(self._read())
             await self.call('initialize', {
                 'clientInfo': {'name': 'chert', 'title': 'Chert Discord bridge', 'version': '0.2.0'},
-                'capabilities': {'experimentalApi': True},
+                'capabilities': {'experimentalApi': True, 'mcpServerOpenaiFormElicitation': True},
             })
             await self.ws.send_json({'method': 'initialized', 'params': {}})
         except BaseException:
@@ -63,6 +68,7 @@ class LiveCodex:
         self.subscribed.clear()
         self.active_turns.clear()
         self.completed_turns.clear()
+        self.server_requests.clear()
         self._fail_pending()
 
     def _fail_pending(self):
@@ -92,10 +98,13 @@ class LiveCodex:
                     if 'id' in data:
                         # Another client owns these approvals. Don't answer (or deny)
                         # them on its behalf; tell the Discord user where to respond.
+                        key = f'{self.instance}:{self.generation}:{data["id"]}'
+                        self.server_requests[key] = data
                         self.notifications.put_nowait({
-                            'method': 'chert/inputRequired', 'params': data.get('params') or {}})
+                            'method': 'chert/inputRequired', 'requestKey': key,
+                            'params': data.get('params') or {}})
                     elif data['method'] in {
-                        'item/completed', 'turn/started', 'turn/completed',
+                        'item/started', 'item/completed', 'turn/started', 'turn/completed',
                         'thread/status/changed', 'thread/name/updated',
                     }:
                         # Never block RPC responses behind slow Discord sends. A full
@@ -123,6 +132,13 @@ class LiveCodex:
             return await asyncio.wait_for(future, self.timeout)
         finally:
             self.pending.pop(request_id, None)
+
+    async def answer(self, key, result):
+        request = self.server_requests.get(key)
+        if request is None or not self.connected:
+            raise RpcError('That prompt expired. Use the current prompt in the original client.')
+        await self.ws.send_json({'id': request['id'], 'result': result})
+        self.server_requests.pop(key, None)
 
     async def loaded_threads(self):
         result, cursor = [], None
@@ -167,10 +183,19 @@ class LiveCodex:
                                          'expectedTurnId': turn_id, 'input': inputs})
             return 'steered'
         params = {'threadId': session.codex_thread, 'input': inputs}
-        if session.model:
+        if session.model and not session.native_settings:
             params['model'] = session.model
-        if session.effort:
+        if session.effort and not session.native_settings:
             params['effort'] = session.effort
+        if session.service_tier:
+            params['serviceTier'] = session.service_tier
+        if session.collaboration_mode in {'plan', 'default'}:
+            model = session.model or session.display_model
+            if not model:
+                info = await self.call('thread/read', {'threadId': session.codex_thread, 'includeTurns': False})
+                model = info['thread'].get('model')
+            params['collaborationMode'] = {'mode': session.collaboration_mode, 'settings': {'model': model,
+                'reasoning_effort': session.effort or None, 'developer_instructions': None}}
         result = await self.call('turn/start', params)
         turn = result.get('turn') or {}
         if turn.get('id') and turn.get('status') == 'inProgress' and turn['id'] not in self.completed_turns:
@@ -195,5 +220,8 @@ def discoverable(thread):
 
 
 def live_status(thread):
-    status = (thread.get('status') or {}).get('type')
+    data = thread.get('status') or {}
+    if any(flag in {'waitingOnApproval', 'waitingOnUserInput'} for flag in data.get('activeFlags', [])):
+        return 'waiting'
+    status = data.get('type')
     return {'active': 'running', 'idle': 'idle', 'systemError': 'error'}.get(status, 'disconnected')

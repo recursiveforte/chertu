@@ -14,7 +14,7 @@ class PresentationTests(unittest.TestCase):
     def test_turn_summary_uses_elapsed_time_and_known_model(self):
         session = Session(42, '/code/celeste', 'test', display_model='test-model')
         self.assertEqual(activity_text(session, 'idle', 100, now=165),
-                         '✅ turn done · 1m 05s · 🧠 `test-model`')
+                         '-# ✅ turn done · 1m 05s · 🧠 `test-model`')
 
     def test_avatar_identity_survives_rename_and_resume(self):
         session = Session(42, '/code/celeste', 'test')

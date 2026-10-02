@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import tempfile
 import uuid
 
@@ -31,16 +32,43 @@ class Session:
     source_message: int | None = None
     turn_started: float = 0
     display_model: str = ''
+    muted: bool = False
+    permission_mode: str = 'default'
+    service_tier: str | None = None
+    deadline: dict | None = None
+    recent: list[dict] = field(default_factory=list)
+    collaboration_mode: str | None = None
+    activity: dict = field(default_factory=dict)
+    journal_seen: list[str] = field(default_factory=list)
+    last_completed_at: float = 0
+    terminal_pane: str | None = None
+    terminal_command: str = ''
+    native_settings: bool = False
+    pending_settings: dict = field(default_factory=dict)
+    ended_seen_absent: bool = False
+    mirror_since: float = 0
+    mirrored_turns: list[str] = field(default_factory=list)
+    delivery_failed: bool = False
+    thread_title_cache: str = ''
+    ended_at: float = 0
 
 
 class SessionStore:
     def __init__(self, path: Path):
         self.path = path
         self.sessions: dict[int, Session] = {}
-        if path.exists():
-            data = json.loads(path.read_text())  # Corrupt state must not be silently replaced.
+        self.meta = {}
+        backup = path.with_suffix(path.suffix + '.bak')
+        if path.exists() or backup.exists():
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                # Match upstream's last-good backup recovery. With no good backup,
+                # fail visibly rather than replacing the session map with an empty one.
+                data = json.loads(backup.read_text())
             if data.get('version') != 1:
                 raise ValueError(f'Unsupported session state version in {path}')
+            self.meta = data.get('meta', {})
             for row in data['sessions']:
                 session = Session(**row)
                 if session.status == 'running':
@@ -52,10 +80,19 @@ class SessionStore:
         fd, name = tempfile.mkstemp(prefix=self.path.name + '.', dir=self.path.parent)
         try:
             with os.fdopen(fd, 'w') as file:
-                json.dump({'version': 1, 'sessions': [asdict(s) for s in self.sessions.values()]}, file)
+                json.dump({'version': 1, 'meta': self.meta, 'sessions': [asdict(s) for s in self.sessions.values()]}, file)
                 file.write('\n')
                 file.flush()
                 os.fsync(file.fileno())
+            if self.path.exists():
+                try:
+                    json.loads(self.path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    pass
+                else:
+                    backup = self.path.with_suffix(self.path.suffix + '.bak')
+                    shutil.copyfile(self.path, backup)
+                    os.chmod(backup, 0o600)
             os.replace(name, self.path)
         finally:
             if os.path.exists(name):

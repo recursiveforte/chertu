@@ -264,6 +264,19 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.sessions[20].status, 'ended')
         self.bot.main_channel.create_thread.assert_awaited_once()
 
+    async def test_external_resume_reopens_existing_thread_after_observed_exit(self):
+        self.store.sessions.clear()
+        info = self.set_up_live()
+        await self.bot.discover_once()
+        self.store.sessions[20].status = 'ended'
+        self.bot.live.loaded_threads.return_value = []
+        await self.bot.discover_once()
+        self.assertTrue(self.store.sessions[20].ended_seen_absent)
+        self.bot.live.loaded_threads.return_value = [info]
+        await self.bot.discover_once()
+        self.assertEqual(self.store.sessions[20].status, 'running')
+        self.bot.main_channel.create_thread.assert_awaited_once()
+
     async def test_live_output_is_mirrored_once_and_reasoning_is_not_posted(self):
         self.store.sessions.clear()
         self.set_up_live()

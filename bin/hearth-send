@@ -20,7 +20,9 @@ pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)}"
 
 payload="$(python3 -c 'import json,os,sys
 print(json.dumps({"path":os.path.abspath(sys.argv[1]),"caption":sys.argv[2],
-                  "pane":sys.argv[3],"cwd":os.getcwd()}))' "$path" "$caption" "$pane")"
+                  "pane":sys.argv[3],"cwd":os.getcwd(),
+                  "sid":os.environ.get("CODEX_THREAD_ID"),
+                  "backend":"codex" if os.environ.get("CODEX_THREAD_ID") else None}))' "$path" "$caption" "$pane")"
 
 code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${port}/session-file" \
   ${secret:+-H "X-Hearth-Secret: $secret"} -H 'content-type: application/json' -d "$payload" || true)"

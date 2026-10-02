@@ -3,14 +3,14 @@ Description=chert: persistent tmux server (session "0" that every claude lives i
 After=network.target
 
 [Service]
-Type=forking
+Type=oneshot
 User=@USER@
 Group=@USER@
 WorkingDirectory=@HOME@
 # The bridge spawns claudes with `tmux new-window -t "$TMUX_SESSION:"` (default session 0);
 # without a live session named 0, summons fail silently.
-ExecStart=/usr/bin/tmux new-session -d -s 0
-ExecStop=/usr/bin/tmux kill-server
+ExecStart=/bin/sh -c '/usr/bin/tmux has-session -t 0 2>/dev/null || /usr/bin/tmux new-session -d -s 0'
+ExecStop=/usr/bin/tmux kill-session -t 0
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=3

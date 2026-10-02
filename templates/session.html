@@ -19,7 +19,7 @@
 </div>
 <main class="session-main">
   <div id="pane-screen" class="pane">
-    {% if live and s.pane %}
+    {% if live and (s.pane or s.can_screen|default(false)) %}
     <pre id="screen" class="screen">tuning in…</pre>
     {% else %}
     <div class="muted pad">No live terminal for this session{% if not live %} — its loop has ended{% endif %}.</div>
@@ -29,10 +29,11 @@
     <div id="chat" class="chat"></div>
   </div>
 </main>
-{% if live and s.pane %}
+{% if live and (s.pane or s.can_send|default(false)) %}
 <footer class="composer">
   <div class="quickkeys">
     <button data-key="Escape">esc</button>
+    {% if s.pane or s.can_screen|default(false) %}
     <button data-key="Up">↑</button>
     <button data-key="Down">↓</button>
     <button data-key="Tab">tab</button>
@@ -43,6 +44,7 @@
     <button data-key="3">3</button>
     <button data-key="4">4</button>
     <button data-key="Enter">⏎</button>
+    {% endif %}
   </div>
   <div class="inputrow">
     <textarea id="msg" rows="1" placeholder="send a signal to this traveler…"></textarea>
@@ -53,7 +55,8 @@
 <script>
 const PREFIX = {{ prefix|tojson }};
 const SID = {{ s.sid|tojson }};
-const LIVE = {{ (live and s.pane is not none)|tojson }};
+const LIVE = {{ (live and (s.pane is not none or s.can_send|default(false)))|tojson }};
+const DEFAULT_TAB = {{ ('chat' if s.can_send|default(false) and not s.pane else 'screen')|tojson }};
 </script>
 <script src="{{ prefix }}/static/session.js"></script>
 </body>
