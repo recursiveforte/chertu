@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 import discord_bot as upstream
@@ -90,6 +90,40 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.bot.codex.http, self.bot.http)
         self.assertIs(self.bot.codex._connection, self.bot._connection)
         self.assertIs(self.bot._connection._command_tree, self.bot.tree)
+
+    async def test_disabled_claude_never_starts_its_poller(self):
+        self.bot.claude_enabled = False
+        guild = SimpleNamespace(id=1)
+        self.bot.codex.main_channel.guild = guild
+        self.bot.fetch_channel = AsyncMock(return_value=SimpleNamespace(id=200, guild=guild))
+        self.bot.codex.start_backend = AsyncMock()
+        self.bot.claude.start = AsyncMock()
+        self.bot.start_hook_server = AsyncMock()
+        self.bot.tree.copy_global_to = Mock()
+        self.bot.tree.sync = AsyncMock()
+        self.bot.host_monitor_loop = AsyncMock()
+        await self.bot.setup_hook()
+        await asyncio.sleep(0)
+        self.bot.claude.start.assert_not_called()
+        self.bot.host_monitor_loop.assert_awaited_once()
+
+    async def test_host_disk_alert_goes_to_codex_without_changing_claude_channel(self):
+        self.bot.claude_enabled = False
+        self.bot.say = AsyncMock()
+        fake_disk = SimpleNamespace(disk_free=Mock(return_value=(170, 13)))
+        with patch.object(upstream, 'ash_twin', fake_disk), patch.object(upstream, 'save_state'), \
+             patch.dict(upstream.state, {'_meta': {'disk_level': 'crit'}}):
+            await self.bot.disk_tick()
+        self.assertIs(self.bot.say.call_args.args[0], self.bot.codex.main_channel)
+        self.assertEqual(self.bot.main_channel.id, 200)
+
+    async def test_disabled_claude_ignores_hooks_and_rejects_dashboard_restart(self):
+        self.bot.claude_enabled = False
+        with patch.object(upstream.Bridge, 'on_hook', new_callable=AsyncMock) as hook:
+            await self.bot.on_hook({'hook_event_name': 'SessionStart'})
+            hook.assert_not_called()
+        response = await self.bot.admin_restart_all(SimpleNamespace())
+        self.assertEqual(response.status, 503)
 
     async def test_existing_codex_webhook_is_reused_so_status_edits_keep_working(self):
         hook = SimpleNamespace(id=900, name='chert-codex', token='unused')

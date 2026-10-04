@@ -39,6 +39,7 @@ class Session:
     recent: list[dict] = field(default_factory=list)
     collaboration_mode: str | None = None
     activity: dict = field(default_factory=dict)
+    subagents: dict = field(default_factory=dict)
     journal_seen: list[str] = field(default_factory=list)
     last_completed_at: float = 0
     terminal_pane: str | None = None

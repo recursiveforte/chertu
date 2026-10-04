@@ -106,6 +106,9 @@ class LiveCodex:
                     elif data['method'] in {
                         'item/started', 'item/completed', 'turn/started', 'turn/completed',
                         'thread/status/changed', 'thread/name/updated',
+                        'item/agentMessage/delta', 'item/reasoning/summaryTextDelta',
+                        'turn/plan/updated',
+                        'error',
                     }:
                         # Never block RPC responses behind slow Discord sends. A full
                         # queue causes a reconnect, rather than deadlocking RPC calls.
@@ -119,6 +122,10 @@ class LiveCodex:
                             future.set_result(data.get('result', {}))
         finally:
             self._fail_pending()
+            try:
+                self.notifications.put_nowait({'method': 'chert/disconnected', 'params': {}})
+            except asyncio.QueueFull:
+                pass  # Discovery will reconnect and reconcile the full queue.
 
     async def call(self, method, params):
         if self.ws is None or self.ws.closed:

@@ -72,6 +72,15 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]['params'], {'threadId': 'first', 'excludeTurns': True})
 
+    async def test_progress_notifications_are_forwarded_but_raw_reasoning_is_not(self):
+        for method in ('item/agentMessage/delta', 'item/reasoning/summaryTextDelta', 'turn/plan/updated'):
+            await self.server_socket.send_json({'method': method, 'params': {'threadId': 'first'}})
+            event = await asyncio.wait_for(self.client.notifications.get(), 1)
+            self.assertEqual(event['method'], method)
+        await self.server_socket.send_json({'method': 'item/reasoning/textDelta', 'params': {'delta': 'private'}})
+        await self.client.call('ping', {})
+        self.assertTrue(self.client.notifications.empty())
+
     async def test_idle_message_starts_turn_with_model_but_preserves_permissions(self):
         session = Session(1, '/project', 'test', 'first', model='example-model', effort='high')
         self.assertEqual(await self.client.submit(session, 'hello'), 'started')

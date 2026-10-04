@@ -66,12 +66,39 @@ class SharedFrontend(upstream.Bridge):
             self.main_channel = await self.fetch_channel(self.claude_channel_id)
             if self.main_channel.guild.id != self.codex.main_channel.guild.id:
                 raise ValueError('#claude and #codex must be in the same Discord server.')
+        if self.claude_enabled:
             await self.claude.start()
         else:
             self.owner = self.codex.owner
             await self.start_hook_server()
             self.tree.copy_global_to(guild=self.codex.main_channel.guild)
             await self.tree.sync(guild=self.codex.main_channel.guild)
+            self.poller = asyncio.create_task(self.host_monitor_loop())
+
+    async def disk_tick(self):
+        # Host health belongs to the active backend, not a disabled Claude channel.
+        if not hasattr(self, '_host_monitor'):
+            self._host_monitor = HostMonitor(self)
+        await upstream.Bridge.disk_tick(self._host_monitor)
+
+    async def host_monitor_loop(self):
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self.disk_tick()
+            except Exception:
+                LOG.exception('Host disk monitor failed')
+            await asyncio.sleep(upstream.POLL_SECS)
+
+    async def on_hook(self, event):
+        if self.claude_enabled:
+            await super().on_hook(event)
+
+    async def admin_restart_all(self, request):
+        if not self.claude_enabled:
+            from aiohttp import web
+            return web.Response(status=503, text='Claude is disabled\n')
+        return await super().admin_restart_all(request)
 
     async def start_hook_server(self):
         # Keep upstream's local endpoints and add a backend-aware dashboard sender.
@@ -196,9 +223,11 @@ class SharedFrontend(upstream.Bridge):
         return body, body + f'\n-# updated <t:{int(time.time())}:R> · edits, never pings'
 
     async def update_shared_presence(self):
-        claude_count = sum(not s.get('ended') for s in upstream.sessions_state().values())
+        claude_count = sum(not s.get('ended') for s in upstream.sessions_state().values()) if self.claude_enabled else 0
         codex_count = sum(s.status not in {'ended', 'disconnected'} for s in self.codex.store.sessions.values())
-        text = f'🔭 {claude_count + codex_count} travelers · Claude {claude_count} · Codex {codex_count}'
+        text = f'🔭 {claude_count + codex_count} travelers · Codex {codex_count}'
+        if self.claude_enabled:
+            text += f' · Claude {claude_count}'
         if text != getattr(self, '_shared_presence', None):
             await discord.Client.change_presence(self, activity=discord.CustomActivity(text))
             self._shared_presence = text
@@ -359,6 +388,23 @@ class SharedFrontend(upstream.Bridge):
         if runner:
             await runner.cleanup()
         await super().close()
+
+
+class HostMonitor:
+    """Run upstream's watchdog with its own clock and an explicit destination."""
+    def __init__(self, frontend):
+        self.frontend = frontend
+        self._last_disk = 0
+
+    @property
+    def main_channel(self):
+        return self.frontend.codex.main_channel
+
+    async def say(self, *args, **kwargs):
+        return await self.frontend.say(*args, **kwargs)
+
+    async def run_offload(self, *args, **kwargs):
+        return await self.frontend.run_offload(*args, **kwargs)
 
 
 class ChannelInteraction:

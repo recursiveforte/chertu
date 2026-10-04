@@ -32,6 +32,7 @@ class CodexChannel(CodexBot):
         self.hub_sinks = set()
         self.terminal = CodexTerminal(runner.binary, self.live.socket)
         self.event_locks = {}
+        self.card_locks = {}
 
     def bind_gateway(self):
         self._connection = self.frontend._connection
@@ -56,7 +57,8 @@ class CodexChannel(CodexBot):
         if chat:
             self.chat_channel = await self.fetch_channel(chat)
         await self.webhook_for()
-        self.background_tasks = [asyncio.create_task(self.live_events()), asyncio.create_task(self.maintenance())]
+        self.background_tasks = [asyncio.create_task(self.live_events()), asyncio.create_task(self.maintenance()),
+                                 asyncio.create_task(self.activity_loop())]
         if self.config.discover:
             self.background_tasks.append(asyncio.create_task(self.discover_loop()))
 
@@ -182,6 +184,12 @@ class CodexChannel(CodexBot):
             await self.live.attach(session.codex_thread)
             session.backend = 'app-server'
         result = await super().send_prompt(thread, prompt)
+        turn_id = getattr(self.live, 'active_turns', {}).get(session.codex_thread)
+        if turn_id:
+            async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+                if turn_id not in getattr(self.live, 'completed_turns', set()):
+                    self.begin_activity(session, turn_id)
+                    await self.update_live_status(session)
         if result == '👀':
             # Native turn settings persist in the daemon. Don't overwrite a later
             # change made from the user's terminal/editor on every Discord reply.
@@ -222,6 +230,18 @@ class CodexChannel(CodexBot):
         self.store.save()
 
     async def handle_live_event(self, event):
+        if event['method'] == 'chert/disconnected':
+            for session in list(self.store.sessions.values()):
+                if session.backend != 'app-server' or session.status in {'ended', 'disconnected'}:
+                    continue
+                async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+                    session.status, session.delivery_failed = 'disconnected', True
+                    self.store.save()
+                    try:
+                        await self.update_live_status(session)
+                    except Exception:
+                        LOG.exception('Could not display Codex disconnection for %s', session.codex_thread)
+            return
         sid = (event.get('params') or {}).get('threadId', '')
         async with self.event_locks.setdefault(sid, asyncio.Lock()):
             try:
@@ -236,6 +256,8 @@ class CodexChannel(CodexBot):
     async def _handle_live_event(self, event):
         params = event.get('params') or {}
         session = next((s for s in self.store.sessions.values() if s.codex_thread == params.get('threadId')), None)
+        if session and session.status == 'ended':
+            return
         if session:
             if event['method'] == 'thread/name/updated':
                 name = params.get('threadName') or params.get('name')
@@ -245,17 +267,69 @@ class CodexChannel(CodexBot):
             if event['method'] == 'chert/inputRequired':
                 return await self.show_request(session, event)
             if event['method'] == 'turn/started':
-                session.activity = {'started': time.time(), 'counts': {}}
-                if not session.muted:
-                    from codex_presentation import activity_text
-                    card = await self.say(await self.live_channel(session), activity_text(session, 'running', time.time()))
-                    session.status_message, session.status_webhook = card.id, True
+                turn = params['turn']
+                if f'completed:{turn["id"]}' in session.seen_live_items:
+                    return
+                self.begin_activity(session, turn['id'], turn.get('startedAt'))
+                await self.update_live_status(session)
+                return
             if event['method'] == 'turn/completed':
-                session.last_completed_at = time.time()
+                turn = params['turn']
+                if session.active_turn and session.active_turn != turn['id']:
+                    return
+                if (f'completed:{turn["id"]}' in session.seen_live_items
+                        and session.activity.get('completed_at') and session.status in {'idle', 'error', 'interrupted'}):
+                    return
+                session.last_completed_at = params['turn'].get('completedAt') or time.time()
+                session.activity.update(completed_at=session.last_completed_at, dirty=True)
+                if session.subagents:
+                    session.subagents['closed'] = True
                 self.store.save()
+            if event['method'] == 'error' and params.get('willRetry'):
+                detail = upstream._clean((params.get('error') or {}).get('message', 'API request failed'), 200)
+                session.activity.update(desc=f'⏳ Retrying: {detail}', dirty=True)
+                if session.activity.get('retry_notice') != detail and not session.muted:
+                    await self.say(await self.live_channel(session), f'-# ⏳ {detail} — Codex is retrying')
+                    session.activity['retry_notice'] = detail
+                await self.update_live_status(session)
+                return
+            if event['method'] in {'item/started', 'item/completed', 'item/agentMessage/delta',
+                                    'item/reasoning/summaryTextDelta', 'turn/plan/updated'}:
+                turn_id = params.get('turnId')
+                if turn_id and session.activity.get('turn_id') != turn_id and event['method'] != 'item/completed':
+                    self.begin_activity(session, turn_id)
+            if event['method'] in {'item/agentMessage/delta', 'item/reasoning/summaryTextDelta'}:
+                kind = 'thinking' if event['method'] == 'item/reasoning/summaryTextDelta' else 'assistant'
+                key = f'{params.get("itemId")}:{params.get("summaryIndex", 0)}:{kind}'
+                if session.activity.get('delta_key') != key:
+                    session.activity.update(delta_key=key, delta_text='')
+                text = (session.activity.get('delta_text', '') + params.get('delta', ''))[-2000:]
+                session.activity['delta_text'] = text
+                upstream.update_card({'card': session.activity}, [{'kind': kind, 'text': text}])
+                await self.update_live_status(session)
+                return
+            if event['method'] == 'turn/plan/updated':
+                steps = params.get('plan') or []
+                current = next((s.get('step', '') for s in steps if s.get('status') == 'inProgress'), '')
+                session.activity.update(desc=upstream._clean(current or params.get('explanation', ''), 200), dirty=True)
+                await self.update_live_status(session)
+                return
             if event['method'] in {'item/started', 'item/completed'}:
                 item = params.get('item') or {}
                 kind = item.get('type')
+                if event['method'] == 'item/started' and session.activity.pop('retry_notice', None):
+                    session.activity.update(desc='', dirty=True)
+                if kind == 'contextCompaction' and not session.muted:
+                    key = f'{item.get("id")}:{event["method"]}'
+                    notices = session.activity.setdefault('compaction_notices', [])
+                    if key not in notices:
+                        text = ('-# 🌀 compacting context…' if event['method'] == 'item/started'
+                                else '-# 🌀 compacted — context is smaller now, memory intact')
+                        await self.say(await self.live_channel(session), text)
+                        notices.append(key)
+                        self.store.save()
+                if kind == 'collabAgentToolCall':
+                    self.update_subagents(session, item.get('agentsStates') or {})
                 if kind in {'commandExecution', 'fileChange', 'mcpToolCall', 'webSearch', 'collabAgentToolCall'}:
                     session.activity.setdefault('counts', {})
                     session.activity.setdefault('started', time.time())
@@ -298,24 +372,119 @@ class CodexChannel(CodexBot):
                     for channel_id in list(self.hub_sinks):
                         target = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
                         await self.frontend.say(target, item.get('text', ''))
+                if item.get('type') == 'agentMessage':
+                    upstream.update_card({'card': session.activity}, [{'kind': 'assistant', 'text': item.get('text', '')}])
                 if session.muted:
                     return
+            if event['method'] == 'thread/status/changed' and params['status'].get('type') == 'idle' and session.active_turn:
+                # Native idle can precede turn/completed. Only that event (or the
+                # history reconciliation) can collapse a working card to "done".
+                return
         await super().handle_live_event(event)
-        if session and event['method'] == 'turn/completed' and not session.delivery_failed:
+        if session and event['method'] == 'turn/completed' and not session.delivery_failed and not event.get('reconciled'):
             turn = params['turn']
             session.mirrored_turns = (session.mirrored_turns + [turn['id']])[-1000:]
             session.mirror_since = max(session.mirror_since, turn.get('completedAt') or time.time())
             self.store.save()
 
+    def begin_activity(self, session, turn_id, started=None):
+        if session.activity.get('turn_id') != turn_id:
+            session.turn_started = started or time.time()
+            session.activity = {'turn_id': turn_id, 'started': session.turn_started,
+                                'counts': {}, 'dirty': True}
+            session.status_message = None
+        session.active_turn, session.status = turn_id, 'running'
+        self.store.save()
+
     async def update_live_status(self, session):
         if session.muted:
             return
-        now = time.time()
-        if session.status == 'running' and now - session.activity.get('last_edit', 0) < upstream.CARD_MIN_GAP:
-            return
-        result = await super().update_live_status(session)
-        session.activity['last_edit'] = now
-        return result
+        from codex_presentation import activity_text
+        async with self.card_locks.setdefault(session.discord_thread, asyncio.Lock()):
+            now = time.time()
+            card = session.activity
+            if (session.status_message and card.get('rendered_status') == session.status
+                    and session.status in {'running', 'waiting'}
+                    and now - card.get('last_edit', 0) < upstream.CARD_MIN_GAP):
+                return
+            content = activity_text(session, session.status, session.turn_started)
+            if card.get('body') == content and session.status_message:
+                if card.get('dirty'):
+                    card['dirty'] = False
+                    self.store.save()
+                return
+            channel = await self.live_channel(session)
+            if session.status_message:
+                try:
+                    if session.status_webhook:
+                        webhook = await self.webhook_for()
+                        await webhook.edit_message(session.status_message, content=content,
+                            thread=channel, allowed_mentions=upstream.NO_PING)
+                    else:
+                        await channel.get_partial_message(session.status_message).edit(
+                            content=content, allowed_mentions=upstream.NO_PING)
+                except discord.NotFound:
+                    session.status_message = None
+            if not session.status_message:
+                message = await self.say(channel, content)
+                if message is None:
+                    raise RuntimeError('Discord did not return an activity message')
+                session.status_message, session.status_webhook = message.id, True
+            card.update(last_edit=now, dirty=False, body=content, rendered_status=session.status)
+            self.store.save()
+
+    async def activity_tick(self):
+        # A slow board, catch-up, or another session's rate limit must not stop
+        # the heartbeat. Failed edits remain dirty and retry on the next tick.
+        async def refresh(session):
+            pending = bool(session.activity) and (session.activity.get('dirty')
+                or session.activity.get('rendered_status') != session.status)
+            subs_pending = session.subagents.get('dirty')
+            if session.muted or session.status not in {'running', 'waiting'} and not pending and not subs_pending:
+                return
+            gap = upstream.CARD_MIN_GAP if pending else upstream.CARD_HEARTBEAT
+            if subs_pending or not session.status_message or time.time() - session.activity.get('last_edit', 0) >= gap:
+                try:
+                    async with asyncio.timeout(15):
+                        async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+                            await self.update_live_status(session)
+                            if subs_pending:
+                                state = {'thread': session.discord_thread, 'parent': self.config.channel_id,
+                                         'subs': session.subagents}
+                                info = {'key': str(session.discord_thread), 'project': Path(session.cwd).name,
+                                        'name': session.name}
+                                await self.frontend.render_subs(session.codex_thread, info, state)
+                                session.subagents['dirty'] = False
+                                self.store.save()
+                except Exception:
+                    LOG.exception('Codex activity update failed for %s', session.codex_thread)
+        await asyncio.gather(*(refresh(s) for s in list(self.store.sessions.values())))
+
+    def update_subagents(self, session, agents):
+        state = {'subs': session.subagents}
+        for agent_id, info in agents.items():
+            status = info.get('status')
+            previous = state['subs'].get('states', {}).get(agent_id)
+            if status == previous:
+                continue
+            live_states = {'pendingInit', 'running'}
+            if previous and previous not in live_states and status not in live_states:
+                state['subs']['states'][agent_id] = status
+                continue
+            event = 'SubagentStart' if status in live_states else 'SubagentStop'
+            # Reuse upstream's aggregation and renderer, including one edited
+            # subagent line instead of publishing internal agents as threads.
+            self.frontend.hook_subagent(event, {'agent_id': agent_id, 'agent_type': 'Codex'}, state)
+            state['subs'].setdefault('states', {})[agent_id] = status
+            state['subs']['dirty'] = True
+        session.subagents = state['subs']
+        self.store.save()
+
+    async def activity_loop(self):
+        await self.wait_until_ready()
+        while not self.is_closed():
+            await self.activity_tick()
+            await asyncio.sleep(upstream.CARD_MIN_GAP)
 
     async def save_attachments(self, message):
         # Use the exact upstream upload naming, limits, and local-path convention.
@@ -817,8 +986,6 @@ class CodexChannel(CodexBot):
                     if session.status == 'idle' and session.pending_settings:
                         await self.ensure_live(session)
                         await self.apply_pending_settings(session)
-                    if session.status == 'running' and time.time() - session.activity.get('last_edit', 0) >= upstream.CARD_HEARTBEAT:
-                        await self.update_live_status(session)
                     if upstream.REVIVE_ON_CRASH and session.status in {'disconnected', 'interrupted'}:
                         attempts = self.store.meta.setdefault('revive_attempts', {})
                         if time.time() - attempts.get(session.codex_thread, 0) > 60:
@@ -956,6 +1123,32 @@ class CodexChannel(CodexBot):
                 await self.frontend.say(channel, f'-# ✏️ renamed to **{session.name}**')
         self.store.save()
 
+    async def observe_status(self, session, info):
+        """Repair missed lifecycle events, including attaching halfway through a turn."""
+        from codex_live import live_status
+        async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+            previous_status = session.status
+            page = await self.live.call('thread/turns/list', {'threadId': session.codex_thread,
+                'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'})
+            turn = next(iter(page.get('data', [])), None)
+            if turn and turn['status'] == 'inProgress':
+                self.begin_activity(session, turn['id'], turn.get('startedAt'))
+                if live_status(info) == 'waiting':
+                    session.status = 'waiting'
+            elif turn and (session.active_turn == turn['id'] or session.activity.get('turn_id') == turn['id']):
+                was_active = bool(session.active_turn)
+                await self._handle_live_event({'method': 'turn/completed', 'reconciled': True, 'params': {
+                    'threadId': session.codex_thread, 'turn': turn}})
+                if was_active:
+                    session.delivery_failed = True  # Recover any replies whose notifications were missed too.
+                    self.store.save()
+                return
+            else:
+                session.status = live_status(info)
+            self.store.save()
+            if previous_status != session.status or not session.status_message or not session.activity.get('body'):
+                await self.update_live_status(session)
+
     async def catch_up(self, session):
         """Recover persisted replies missed during a bridge disconnect; never rerun a turn."""
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
@@ -997,7 +1190,7 @@ class CodexChannel(CodexBot):
                                 'threadId': session.codex_thread, 'turnId': turn['id'], 'item': item}})
                     if turn.get('error'):
                         await self.say(await self.live_channel(session), f'⚠️ Recovered failed turn: {turn["error"].get("message", "unknown error")}')
-                    if turn['status'] == 'completed':
+                    if turn['status'] == 'completed' and f'completed:{turn["id"]}' not in session.seen_live_items:
                         session.turns += 1
                     session.mirrored_turns = (session.mirrored_turns + [turn['id']])[-1000:]
                     session.seen_live_items = (session.seen_live_items + [f'completed:{turn["id"]}'])[-256:]
@@ -1017,8 +1210,12 @@ class CodexChannel(CodexBot):
         if request:
             session.status = 'waiting'
             self.store.save()
+            await self.update_live_status(session)
             body, view = request_view(self, key, request)
-            await (await self.live_channel(session)).send(body, view=view, allowed_mentions=upstream.NO_PING)
+            ping = f'<@{self.owner}> ' if self.owner else ''
+            await (await self.live_channel(session)).send(ping + body, view=view,
+                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=self.owner)] if self.owner else [],
+                                                         roles=False, everyone=False))
 
     async def on_component(self, interaction):
         cid = (interaction.data or {}).get('custom_id', '')

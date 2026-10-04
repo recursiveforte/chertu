@@ -19,7 +19,7 @@ class ClaudeBackend:
         control = content.split(maxsplit=1)[0].lower() if content else ''
         if not host.claude_enabled and control not in {'!help', '!sessions', '!status', '!threads', '!ls',
                                                        '!disk', '!s3', '!backup', '!offload', '!restore', '!astra'}:
-            return await host.say(message.channel, 'Claude is configured but not signed in on this host. Use #codex for now.')
+            return await host.say(message.channel, 'Claude is disabled. Use #codex for now.')
         if message.channel.id == host.claude_channel_id and not content.startswith('!'):
             text = re.sub(rf'<@!?{host.user.id}>', '', content).strip()
             if text or message.attachments:
@@ -29,7 +29,7 @@ class ClaudeBackend:
     async def execute(self, name, original, interaction, kwargs):
         host = self.frontend
         if not host.claude_enabled and name not in {'help', 'sessions', 'disk', 's3', 'backup', 'offload', 'restore'}:
-            return await interaction.response.send_message('Claude is configured but not signed in on this host.', ephemeral=True)
+            return await interaction.response.send_message('Claude is disabled. Use #codex for now.', ephemeral=True)
         if name == 'claude' and interaction.channel_id != host.claude_channel_id:
             from shared_frontend import ChannelInteraction
             interaction = ChannelInteraction(interaction, host.main_channel)

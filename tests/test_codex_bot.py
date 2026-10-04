@@ -9,6 +9,7 @@ import discord
 
 from codex_backend import Session, SessionStore, TurnResult
 from codex_bot import CodexBot, Config, NO_MENTIONS
+from codex_live import RpcError
 
 
 class BotTests(unittest.IsolatedAsyncioTestCase):
@@ -250,6 +251,27 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.discover_once()
         self.bot.main_channel.create_thread.assert_awaited_once()
         self.runner.run.assert_not_called()
+
+    async def test_unmaterialized_editor_tab_does_not_create_discord_thread_or_block_discovery(self):
+        self.store.sessions.clear()
+        info = self.set_up_live()
+        self.bot.live.loaded_threads.return_value = [{**info, 'id': 'empty-tab'}, info]
+        async def attach(sid):
+            if sid == 'empty-tab':
+                raise RpcError('no rollout found')
+        self.bot.live.attach.side_effect = attach
+        with self.assertLogs('codex_bot', level='WARNING'):
+            await self.bot.discover_once()
+        self.bot.main_channel.create_thread.assert_awaited_once()
+        self.assertEqual(self.store.sessions[20].codex_thread, 'external')
+
+    async def test_removed_test_session_is_not_rediscovered(self):
+        self.store.sessions.clear()
+        self.set_up_live()
+        self.store.meta['discovery_excluded'] = ['external']
+        await self.bot.discover_once()
+        self.bot.main_channel.create_thread.assert_not_called()
+        self.bot.live.attach.assert_not_called()
 
     async def test_live_replies_and_stop_control_original_session_without_exec(self):
         self.store.sessions.clear()

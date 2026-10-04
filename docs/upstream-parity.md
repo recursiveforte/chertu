@@ -81,6 +81,40 @@ All entries below are registered once and dispatched by channel. “Upstream” 
 
 ## Verification and limits
 
+### 2026-10-03 activity and disabled-backend audit
+
+The earlier checks were insufficient: registered commands and an online bridge did
+not prove reliable live feedback. A disabled Claude adapter still started the
+upstream poller, which posted host disk alerts in #claude. Codex could silently
+lose its card when a Discord message disappeared, miss progress deltas, and fail
+to reconstruct a turn already running when the bridge attached. An unmaterialized
+editor tab could interrupt discovery of the other sessions. Production discovery
+also published previous deployment tests; those tests should have been isolated.
+
+- Disabled Claude no longer starts its poller. The original disk watchdog runs
+  independently and sends host alerts to #codex. “Disk recovered” reports observed
+  free space; it does not assert that Chert deleted or offloaded anything.
+- Codex renders a working card immediately when a turn is accepted. Public progress
+  summaries, narration, plans and tools feed the original upstream card renderer;
+  raw reasoning deltas are excluded. An independent heartbeat flushes coalesced
+  changes and updates elapsed time, even if board or history work is slow.
+- Native subagent states use upstream's aggregation and edited subagent line;
+  internal agents are not published as separate Discord threads. Compaction and
+  automatic API retries are reported in the session instead of silently dropped.
+- Turn snapshots repair missing lifecycle events and preserve the original start
+  time. Completion freezes elapsed time, interruption never says “done”, and a
+  runtime disconnect is shown explicitly. Missing Discord cards are recreated.
+- Discovery attaches before publishing a new thread and isolates per-session
+  failures. Removed test sessions can be excluded from rediscovery.
+- `tests/live_codex_activity.py` uses a temporary, separate CODEX_HOME, an isolated
+  real app-server, and an in-memory Discord sink. It never connects to production
+  Discord or the production daemon. The real check verified immediate working
+  feedback, a shell tool waiting 23 seconds, heartbeat edits, final reply and the
+  upstream completion card (28 native events and four card edits).
+
+These checks establish the activity lifecycle above, not blanket proof that every
+optional backend feature has been exercised live.
+
 - Full upstream command/parameter/permission coverage and exact source-file hash checks.
 - Tests for channel isolation, a single gateway/command registry, existing-state/webhook migration, message-attached launches, uploads, permission decisions, stale-request rejection, mute/history, countdown persistence, lifecycle operations and backup recovery.
 - Real Codex daemon checks: new turn and event normalization, rename, permission-mode updates, history, native fork retaining conversation context, restart, kill and resume.
