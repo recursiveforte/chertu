@@ -282,6 +282,10 @@ class SharedFrontend(upstream.Bridge):
                 command._params['to'].description = 'Fork in the same backend, or hand the conversation to Claude/Codex'
             if name in {'model', 'globalmodel'}:
                 command._params['name'].description = 'Model ID or alias; autocomplete follows this channel’s backend'
+            if name == 'model':
+                command._params['name'].required = False
+                command._params['name'].default = ''
+                command._params['name'].description = 'Model ID or alias; leave blank to open the model picker'
             if name == 'claude':
                 command.description = 'Launch a Claude session in #claude'
             if name == 'astra':
@@ -334,6 +338,9 @@ class SharedFrontend(upstream.Bridge):
             return await interaction.response.send_message('Use this command in #codex or #claude.', ephemeral=True)
         if name in {'model', 'globalmodel', 'fast'} and not self.privileged(interaction.user):
             return await interaction.response.send_message(f'/{name} is owner-only.', ephemeral=True)
+        if name == 'model' and not kwargs.get('name', '').strip():
+            from shared_models import show_model_picker
+            return await show_model_picker(self, interaction, backend)
         if backend == 'claude':
             return await self.claude.execute(name, original, interaction, kwargs)
         if not self.codex.allowed(interaction.user.id, self.codex.main_channel):

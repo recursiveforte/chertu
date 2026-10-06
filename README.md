@@ -73,7 +73,8 @@ The primary command names, arguments, defaults and permission metadata come from
 
 The `!` forms are also available. `/fork` defaults to the same backend; selecting the other backend performs a conversation handoff. `/model`, `/globalmodel`, and `/fast` remain owner-only.
 
-In a Codex session thread, `/model name:…` selects the model for the next turn. It
+In a session thread, `/model` opens a picker showing the current and queued model.
+You can also use `/model name:…` directly. In Codex, the selection applies to the next turn. It
 does not interrupt a running turn; messages sent during that turn still steer the
 current model. The choice remains queued until Codex accepts a new turn. `/effort`
 works the same way. `/globalmodel` also changes the default for new sessions.

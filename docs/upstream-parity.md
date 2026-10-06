@@ -81,6 +81,14 @@ All entries below are registered once and dispatched by channel. “Upstream” 
 
 ## Verification and limits
 
+### 2026-10-06 parameterless model picker
+
+`/model` now accepts an omitted `name` and opens a private model picker in the
+session thread, showing current and queued selections. Choosing an option uses
+the same authorized backend handler as `/model name:…`. This intentionally makes
+upstream's required parameter optional; `/globalmodel` still requires a name and
+is never invoked implicitly from the parent channel. Disabled Claude stays disabled.
+
 ### 2026-10-05 model-switch correction
 
 The previous `/model` handler reported success after `thread/resume`, but a real

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 import discord_bot as upstream
-from codex_backend import SessionStore
+from codex_backend import Session, SessionStore
 from codex_bot import Config
 from shared_frontend import SharedFrontend
 from setup_discord import channels_for
@@ -47,6 +47,70 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
     def test_discord_gateway_dispatcher_is_not_shadowed_by_command_routing(self):
         self.assertIs(SharedFrontend.dispatch, discord.Client.dispatch)
         self.bot.dispatch('socket_event_type', 'READY')
+
+    async def test_model_name_is_optional_in_discord_schema_and_argument_parser(self):
+        command = self.bot.tree.get_command('model')
+        option = command.to_dict(self.bot.tree)['options'][0]
+        self.assertFalse(option['required'])
+        arguments = await command._transform_arguments(self.interaction(300), SimpleNamespace())
+        self.assertEqual(arguments, {'name': ''})
+        self.assertTrue(self.bot.tree.get_command('globalmodel')._params['name'].required)
+
+    async def open_model_picker(self):
+        session = Session(300, self.tmp.name, 'test', 'native', backend='app-server',
+                          pending_settings={'model': 'next-model'})
+        self.bot.codex.store.sessions[300] = session
+        async def call(method, params):
+            if method == 'model/list':
+                return {'data': [{'model': model, 'displayName': model} for model in ('current-model', 'next-model')]}
+            return {'thread': {'model': 'current-model'}}
+        self.bot.codex.live = SimpleNamespace(connect=AsyncMock(), close=AsyncMock(), call=AsyncMock(side_effect=call))
+        interaction = self.interaction(300)
+        await self.bot.tree.get_command('model')._do_call(interaction, {})
+        return interaction, interaction.followup.send.call_args.kwargs['view']
+
+    async def test_bare_model_shows_current_and_queued_models_without_changing_them(self):
+        interaction, view = await self.open_model_picker()
+        body = interaction.followup.send.call_args.args[0]
+        self.assertIn('**Current model:** `current-model`', body)
+        self.assertIn('**Queued model:** `next-model`', body)
+        self.assertTrue(interaction.followup.send.call_args.kwargs['ephemeral'])
+        self.assertEqual([o.value for o in view.select.options if o.default], ['next-model'])
+        self.assertEqual([c.args[0] for c in self.bot.codex.live.call.call_args_list], ['model/list', 'thread/read'])
+
+    async def test_model_picker_selection_uses_existing_backend_handler(self):
+        _, view = await self.open_model_picker()
+        self.bot.codex.execute = AsyncMock()
+        click = self.interaction(300)
+        click.message = SimpleNamespace(edit=AsyncMock())
+        view.select._values = ['next-model']
+        self.assertTrue(await view.interaction_check(click))
+        await view.choose(click)
+        args = self.bot.codex.execute.call_args.args
+        self.assertEqual((args[0], args[3]), ('model', {'name': 'next-model'}))
+        click.message.edit.assert_awaited_once_with(content='Selected `next-model`.', view=None)
+        self.assertTrue(view.is_finished())
+
+    async def test_model_picker_rejects_another_user_or_thread(self):
+        _, view = await self.open_model_picker()
+        for channel, user in ((300, 99), (400, 7)):
+            click = self.interaction(channel)
+            click.user.id = user
+            self.assertFalse(await view.interaction_check(click))
+            click.response.send_message.assert_awaited_once()
+
+    async def test_bare_model_in_parent_channel_does_not_change_global_default(self):
+        interaction = self.interaction(100)
+        self.bot.codex.execute = AsyncMock()
+        await self.bot.tree.get_command('model')._do_call(interaction, {})
+        self.assertIn('session thread', interaction.response.send_message.call_args.args[0])
+        self.bot.codex.execute.assert_not_called()
+
+    async def test_bare_model_keeps_disabled_claude_disabled(self):
+        self.bot.claude_enabled = False
+        interaction = self.interaction(200)
+        await self.bot.tree.get_command('model')._do_call(interaction, {})
+        self.assertIn('disabled', interaction.response.send_message.call_args.args[0])
 
     def test_routes_parent_channels_and_threads_to_only_one_backend(self):
         self.assertEqual(self.bot.backend_for(SimpleNamespace(id=100)), 'codex')

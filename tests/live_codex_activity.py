@@ -44,7 +44,16 @@ async def check_model(frontend, session, channel, consumer):
     target = next(m['model'] for m in models if m['model'] != before)
     interaction = SimpleNamespace(channel=channel, channel_id=channel.id, user=SimpleNamespace(id=7),
         response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
-    await frontend.tree.get_command('model')._do_call(interaction, {'name': target})
+    command = frontend.tree.get_command('model')
+    arguments = await command._transform_arguments(interaction, SimpleNamespace())
+    await command._do_call(interaction, arguments)
+    picker = interaction.followup.send.call_args.kwargs['view']
+    assert before in interaction.followup.send.call_args.args[0]
+    picker.select._values = [target]
+    interaction.message = SimpleNamespace(edit=AsyncMock())
+    assert await picker.interaction_check(interaction)
+    await picker.choose(interaction)
+    print('Bare /model picker and selection: PASS', flush=True)
     print('Slash command:', interaction.followup.send.call_args.args[0], flush=True)
     assert session.pending_settings.get('model') == target, 'Model choice was lost before the next turn'
     await turn()
