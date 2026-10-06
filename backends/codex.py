@@ -177,7 +177,6 @@ class CodexChannel(CodexBot):
         if session.status == 'ended':
             raise ValueError('This session ended. Use /revive or /resume first.')
         await self.ensure_live(session)
-        await self.apply_pending_settings(session)
         # Old exec-created conversations are resumed through the same daemon too.
         if session.backend == 'exec' and session.codex_thread and thread.id not in self.workers:
             await self.live.connect()
@@ -549,15 +548,6 @@ class CodexChannel(CodexBot):
         session.native_settings = True
         self.store.save()
 
-    async def apply_pending_settings(self, session):
-        if not session.pending_settings or await self.live.active_turn(session.codex_thread):
-            return
-        response = await self.live.call('thread/resume', {
-            'threadId': session.codex_thread, 'excludeTurns': True, **session.pending_settings})
-        session.display_model = response.get('model') or session.display_model
-        session.pending_settings.clear()
-        self.store.save()
-
     async def stop(self, thread, end=False):
         session = self.store.sessions[thread.id]
         if session.backend == 'app-server':
@@ -630,7 +620,7 @@ class CodexChannel(CodexBot):
             from setup_discord import ENV, write_env
             if ENV.exists():
                 write_env({'CODEX_MODEL': model})
-            return await respond(f'🧠 Model for this backend and new sessions: `{model}`')
+            return await respond(f'🧠 Model for new sessions: `{model}` · existing sessions switch on their next turn')
         if name == 'fast':
             current = self.store.sessions.get(channel.id)
             targets = list(self.store.sessions.values()) if args.get('everywhere') or current is None else [current]
@@ -786,8 +776,7 @@ class CodexChannel(CodexBot):
             else:
                 setattr(session, name, value)
             self.store.save()
-            await self.apply_pending_settings(session)
-            return await respond(f'✅ {name} → `{value}`' + (' · queued until idle' if session.pending_settings else ''))
+            return await respond(f'✅ {name} → `{value}`' + (' · applies to the next turn' if name in {'model', 'effort'} else ''))
         if name == 'mode':
             await self.set_mode(session, args['mode'])
             return await respond(f'Permission mode: {args["mode"]}')
@@ -983,9 +972,6 @@ class CodexChannel(CodexBot):
                         continue
                     if session.status != 'ended' and session.delivery_failed:
                         await self.catch_up(session)
-                    if session.status == 'idle' and session.pending_settings:
-                        await self.ensure_live(session)
-                        await self.apply_pending_settings(session)
                     if upstream.REVIVE_ON_CRASH and session.status in {'disconnected', 'interrupted'}:
                         attempts = self.store.meta.setdefault('revive_attempts', {})
                         if time.time() - attempts.get(session.codex_thread, 0) > 60:

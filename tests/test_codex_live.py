@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 
 from aiohttp import web
 
@@ -97,6 +98,51 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(c.get('method') == 'turn/start' for c in self.calls))
         await self.client.interrupt('first')
         self.assertEqual(self.calls[-1]['params'], {'threadId': 'first', 'turnId': 'turn-123'})
+
+    async def test_explicit_native_model_and_effort_are_applied_once_on_next_turn(self):
+        session = Session(1, '/project', 'test', 'first', native_settings=True,
+                          pending_settings={'model': 'chosen-model', 'config': {'model_reasoning_effort': 'high'}})
+        await self.client.submit(session, 'hello')
+        call = next(c for c in self.calls if c.get('method') == 'turn/start')
+        self.assertEqual(call['params']['model'], 'chosen-model')
+        self.assertEqual(call['params']['effort'], 'high')
+        self.assertEqual(session.pending_settings, {})
+        self.assertEqual(session.display_model, 'chosen-model')
+        self.client.active_turns.clear()
+        await self.client.submit(session, 'next')
+        calls = [c for c in self.calls if c.get('method') == 'turn/start']
+        self.assertNotIn('model', calls[-1]['params'])
+        self.assertNotIn('effort', calls[-1]['params'])
+
+    async def test_model_selection_survives_steering_until_a_new_turn(self):
+        self.active = 'turn-123'
+        session = Session(1, '/project', 'test', 'first', native_settings=True,
+                          pending_settings={'model': 'chosen-model'})
+        await self.client.submit(session, 'follow-up')
+        self.assertEqual(session.pending_settings, {'model': 'chosen-model'})
+
+    async def test_rejected_turn_keeps_model_choice_for_retry(self):
+        session = Session(1, '/project', 'test', 'first', native_settings=True,
+                          pending_settings={'model': 'chosen-model'})
+        self.client.attach = AsyncMock()
+        self.client.active_turn = AsyncMock(return_value=None)
+        self.client.call = AsyncMock(side_effect=RpcError('server overloaded'))
+        with self.assertRaises(RpcError):
+            await self.client.submit(session, 'hello')
+        self.assertEqual(session.pending_settings, {'model': 'chosen-model'})
+
+    async def test_newer_model_choice_is_not_cleared_by_an_earlier_turn_response(self):
+        session = Session(1, '/project', 'test', 'first', native_settings=True,
+                          pending_settings={'model': 'first-choice'})
+        self.client.attach = AsyncMock()
+        self.client.active_turn = AsyncMock(return_value=None)
+        async def call(method, params):
+            session.pending_settings['model'] = 'newer-choice'
+            return {'turn': {'id': 'turn', 'status': 'inProgress'}}
+        self.client.call = AsyncMock(side_effect=call)
+        await self.client.submit(session, 'hello')
+        self.assertEqual(session.pending_settings, {'model': 'newer-choice'})
+        self.assertEqual(session.display_model, 'first-choice')
 
     async def test_steer_race_is_reported_without_resending_prompt(self):
         self.active, self.fail_steer = 'turn-123', True

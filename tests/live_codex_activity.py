@@ -1,6 +1,7 @@
 """Opt-in real-runtime check with isolated CODEX_HOME and an in-memory Discord sink.
 
 Run on the deployment host: .venv/bin/python tests/live_codex_activity.py
+Use --model to exercise the real /model command and subsequent inference instead.
 No Discord token, production daemon, or production conversation is used.
 """
 import asyncio
@@ -22,7 +23,38 @@ from codex_live import LiveCodex
 from shared_frontend import SharedFrontend
 
 
-async def main():
+async def check_model(frontend, session, channel, consumer):
+    adapter = frontend.codex
+    frontend.owner = adapter.owner = 7
+    adapter.main_channel = SimpleNamespace(id=100)
+
+    async def turn():
+        await adapter.send_prompt(channel, 'Reply exactly OK. Do not use tools.')
+        async with asyncio.timeout(120):
+            while session.status not in {'idle', 'error', 'interrupted'}:
+                if consumer.done():
+                    await consumer
+                await asyncio.sleep(.1)
+        await adapter.live.notifications.join()
+        assert session.status == 'idle', f'Inference failed: {session.status}'
+
+    await turn()  # Materialize history, as for an existing Discord conversation.
+    before = (await adapter.live.call('thread/read', {'threadId': session.codex_thread, 'includeTurns': False}))['thread']['model']
+    models = (await adapter.live.call('model/list', {}))['data']
+    target = next(m['model'] for m in models if m['model'] != before)
+    interaction = SimpleNamespace(channel=channel, channel_id=channel.id, user=SimpleNamespace(id=7),
+        response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
+    await frontend.tree.get_command('model')._do_call(interaction, {'name': target})
+    print('Slash command:', interaction.followup.send.call_args.args[0], flush=True)
+    assert session.pending_settings.get('model') == target, 'Model choice was lost before the next turn'
+    await turn()
+    actual = (await adapter.live.call('thread/read', {'threadId': session.codex_thread, 'includeTurns': False}))['thread']['model']
+    assert actual == target, f'Slash command selected {target}, but runtime used {actual}'
+    assert 'model' not in session.pending_settings
+    print(f'Real /model and completed inference: PASS ({before} → {actual})', flush=True)
+
+
+async def main(model_check=False):
     binary = shutil.which('codex') or str(Path.home()/'.local/bin/codex')
     original_home = Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
     with tempfile.TemporaryDirectory(prefix='chert-qa-', dir='/tmp') as temporary:
@@ -52,7 +84,7 @@ async def main():
             live = adapter.live
             await live.connect()
             response = await live.call('thread/start', {'cwd': str(project), 'approvalPolicy': 'on-request',
-                'sandbox': 'workspace-write', 'ephemeral': True})
+                'sandbox': 'workspace-write', 'ephemeral': not model_check})
             sid = response['thread']['id']
             live.subscribed.add(sid)
             session = Session(300, str(project), 'isolated activity verification', sid,
@@ -83,6 +115,9 @@ async def main():
                     await asyncio.sleep(1)
             ticker = asyncio.create_task(heartbeat())
             try:
+                if model_check:
+                    await check_model(frontend, session, channel, consumer)
+                    return
                 started = time.monotonic()
                 await adapter.send_prompt(channel,
                     'Run a shell command that sleeps for 23 seconds and then prints CHERT_ACTIVITY_TOOL_OK. '
@@ -123,4 +158,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(main(model_check='--model' in sys.argv))

@@ -53,8 +53,8 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         await self.host.close()
         self.tmp.cleanup()
 
-    async def execute(self, name, **kwargs):
-        await self.adapter.execute(name, self.channel, self.user, kwargs, self.respond)
+    async def execute(self, command, **kwargs):
+        await self.adapter.execute(command, self.channel, self.user, kwargs, self.respond)
 
     async def test_restart_unloads_only_selected_actor_and_preserves_history_id(self):
         await self.execute('restart', force=False)
@@ -96,6 +96,15 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.live.call.assert_awaited_with('thread/resume', {
             'threadId': SID, 'excludeTurns': True, 'approvalPolicy': 'on-request',
             'sandbox': 'workspace-write', 'approvalsReviewer': 'user'})
+
+    async def test_model_command_queues_next_turn_instead_of_resuming_loaded_actor(self):
+        await self.execute('model', name='new-model')
+        self.assertEqual(self.session.pending_settings, {'model': 'new-model'})
+        self.assertEqual(self.session.display_model, 'test-model')
+        self.adapter.live.call.assert_not_called()
+        self.assertIn('applies to the next turn', self.respond.call_args.args[0])
+        saved = SessionStore(self.adapter.store.path).sessions[300]
+        self.assertEqual(saved.pending_settings, {'model': 'new-model'})
 
     async def test_mute_suppresses_model_output_but_retains_history(self):
         await self.execute('mute')

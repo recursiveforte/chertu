@@ -194,17 +194,38 @@ class LiveCodex:
             params['model'] = session.model
         if session.effort and not session.native_settings:
             params['effort'] = session.effort
+        # thread/resume ignores configuration overrides for an already-loaded
+        # actor. Explicit Discord changes belong on the next turn/start instead.
+        pending_model = session.pending_settings.get('model')
+        pending_effort = session.pending_settings.get('config', {}).get('model_reasoning_effort')
+        if pending_model is not None:
+            params['model'] = pending_model
+        if pending_effort is not None:
+            params['effort'] = pending_effort
         if session.service_tier:
             params['serviceTier'] = session.service_tier
         if session.collaboration_mode in {'plan', 'default'}:
-            model = session.model or session.display_model
+            model = params.get('model')
             if not model:
                 info = await self.call('thread/read', {'threadId': session.codex_thread, 'includeTurns': False})
-                model = info['thread'].get('model')
+                model = info['thread'].get('model') or session.display_model
             params['collaborationMode'] = {'mode': session.collaboration_mode, 'settings': {'model': model,
-                'reasoning_effort': session.effort or None, 'developer_instructions': None}}
+                'reasoning_effort': params.get('effort'), 'developer_instructions': None}}
         result = await self.call('turn/start', params)
         turn = result.get('turn') or {}
+        if turn.get('id') and turn.get('status') != 'failed':
+            # Clear only the settings actually accepted; a newer slash command
+            # may have queued another choice while this RPC was in flight.
+            if pending_model is not None:
+                session.display_model = pending_model
+                if session.pending_settings.get('model') == pending_model:
+                    session.pending_settings.pop('model')
+            if pending_effort is not None:
+                config = session.pending_settings.get('config', {})
+                if config.get('model_reasoning_effort') == pending_effort:
+                    config.pop('model_reasoning_effort')
+                    if not config:
+                        session.pending_settings.pop('config', None)
         if turn.get('id') and turn.get('status') == 'inProgress' and turn['id'] not in self.completed_turns:
             # The runtime status in thread/read can lag this response. Track the
             # accepted turn immediately so a fast follow-up steers that exact turn.

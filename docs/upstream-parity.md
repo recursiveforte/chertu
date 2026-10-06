@@ -81,6 +81,20 @@ All entries below are registered once and dispatched by channel. “Upstream” 
 
 ## Verification and limits
 
+### 2026-10-05 model-switch correction
+
+The previous `/model` handler reported success after `thread/resume`, but a real
+loaded actor retained its old model. Model and effort selections now persist until
+they are passed explicitly to `turn/start`; steering an active turn does not
+consume them. A rejected start retains the selection for retry. Once accepted,
+the override is removed so later choices made in another Codex client are respected.
+The command response now says the selection applies to the next turn.
+
+The isolated runtime check can be run with
+`tests/live_codex_activity.py --model`: it invokes the actual shared Discord command
+callback, completes a subsequent inference turn, and verifies the runtime's model
+metadata instead of trusting the command's confirmation text.
+
 ### 2026-10-03 activity and disabled-backend audit
 
 The earlier checks were insufficient: registered commands and an online bridge did
