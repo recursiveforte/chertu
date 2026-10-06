@@ -23,6 +23,17 @@ LOG = logging.getLogger(__name__)
 
 
 class CodexChannel(CodexBot):
+    @property
+    def main_channel(self):
+        project = getattr(self.frontend, 'current_project', None)
+        if project:
+            return self.frontend.project_channels.get(project.channel_id)
+        return getattr(self, '_main_channel', None)
+
+    @main_channel.setter
+    def main_channel(self, channel):
+        self._main_channel = channel
+
     def __init__(self, config, runner, store, frontend):
         self.frontend = frontend
         super().__init__(config, runner, store, register_commands=False)
@@ -45,24 +56,33 @@ class CodexChannel(CodexBot):
         return self.frontend.is_closed()
 
     async def start_backend(self):
-        self.main_channel = await self.fetch_channel(self.config.channel_id)
-        guild = await self.fetch_guild(self.main_channel.guild.id)
-        self.owner = self.config.owner_id or guild.owner_id
-        broadcast = int(os.environ.get('DISCORD_CODEX_BROADCAST_CHANNEL_ID') or 0)
-        chat = int(os.environ.get('DISCORD_CODEX_CHAT_CHANNEL_ID') or 0)
+        projects = getattr(self.frontend, 'projects', None)
+        if projects is not None:
+            self.main_channel = self.frontend.main_channel
+            self.owner = self.frontend.owner
+        else:
+            self.main_channel = await self.fetch_channel(self.config.channel_id)
+            guild = await self.fetch_guild(self.main_channel.guild.id)
+            self.owner = self.config.owner_id or guild.owner_id
+        broadcast = 0 if projects is not None else int(os.environ.get('DISCORD_CODEX_BROADCAST_CHANNEL_ID') or 0)
+        chat = 0 if projects is not None else int(os.environ.get('DISCORD_CODEX_CHAT_CHANNEL_ID') or 0)
         if broadcast:
             self.broadcast_channel = await self.fetch_channel(broadcast)
             if self.store.meta.get('hub'):
                 self.hub_sinks.add(broadcast)
         if chat:
             self.chat_channel = await self.fetch_channel(chat)
-        await self.webhook_for()
+        if self.main_channel is not None:
+            await self.webhook_for()
         self.background_tasks = [asyncio.create_task(self.live_events()), asyncio.create_task(self.maintenance()),
                                  asyncio.create_task(self.activity_loop())]
         if self.config.discover:
             self.background_tasks.append(asyncio.create_task(self.discover_loop()))
 
     def allowed(self, user_id, channel):
+        projects = getattr(self.frontend, 'projects', None)
+        if projects is not None:
+            return bool(projects.for_channel(channel) and (user_id == self.owner or user_id in self.config.allowed_users))
         if channel and channel.id in self.store.sessions:
             return user_id == self.owner or user_id in self.config.allowed_users
         if channel and channel.id in {getattr(self.broadcast_channel, 'id', None), getattr(self.chat_channel, 'id', None)}:
@@ -76,8 +96,22 @@ class CodexChannel(CodexBot):
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.live.close()
 
-    async def webhook_for(self):
-        return await self.frontend.webhook_for(self.main_channel)
+    async def webhook_for(self, channel=None):
+        return await self.frontend.webhook_for(channel or self.main_channel)
+
+    async def discovery_channel(self, info):
+        projects = getattr(self.frontend, 'projects', None)
+        if projects is None:
+            return self.main_channel
+        project = projects.for_directory(info.get('cwd'))
+        if project and not project.archived:
+            return self.frontend.project_channels.get(project.channel_id)
+        return None
+
+    async def parent_channel(self, thread):
+        if getattr(self.frontend, 'projects', None) is None:
+            return self.main_channel
+        return getattr(thread, 'parent', None) or await self.fetch_channel(thread.parent_id)
 
     async def say(self, channel, text):
         session = self.store.sessions.get(getattr(channel, 'id', None))
@@ -89,11 +123,14 @@ class CodexChannel(CodexBot):
         for _, content in entries:
             if content.startswith('-# …truncated — '):
                 content = content.replace(upstream.DASHBOARD, upstream.DASHBOARD.removesuffix('/claudes') + '/codex')
-            message = await self.frontend.post_as(self.main_channel, name, content,
+            message = await self.frontend.post_as(await self.parent_channel(channel), name, content,
                                                    session.discord_thread, seed=str(session.discord_thread))
         return message
 
     async def _start_session(self, prompt, project='', codex_id=None, source_message=None, cwd=None):
+        current = getattr(self.frontend, 'current_project', None)
+        if current and not codex_id and cwd is None:
+            cwd = Path(current.directory)
         if source_message and source_message.id in self.store.sessions:
             return await self.fetch_channel(source_message.id)
         old = next((s for s in self.store.sessions.values() if s.codex_thread == codex_id), None) if codex_id else None
@@ -131,13 +168,24 @@ class CodexChannel(CodexBot):
                 params['config']['model_reasoning_effort'] = self.config.effort
             result = await self.live.call('thread/start', params)
         info = result['thread']
+        parent = self.main_channel
+        projects = getattr(self.frontend, 'projects', None)
+        if projects is not None:
+            destination = projects.for_directory(info.get('cwd'))
+            if destination is None or destination.archived:
+                raise ValueError('This session needs an active project for its working directory. Use /project or /unarchive first.')
+            parent = self.frontend.project_channels.get(destination.channel_id)
+            if parent is None:
+                raise ValueError('The project channel is missing. Run setup_discord.py to repair it.')
+            if source_message and source_message.channel.id != destination.channel_id:
+                raise ValueError('The session directory belongs to a different project channel.')
         title = prompt_name(prompt) if prompt else info.get('name') or f'codex-{info["id"][:8]}'
         if source_message:
             await source_message.add_reaction('🚀')
             thread = await source_message.create_thread(name=upstream.thread_title(title, info['id'], False),
                                                         auto_archive_duration=10080)
         else:
-            thread = await self.main_channel.create_thread(name=upstream.thread_title(title, info['id'], False),
+            thread = await parent.create_thread(name=upstream.thread_title(title, info['id'], False),
                                                            type=discord.ChannelType.public_thread, auto_archive_duration=10080)
         session = Session(thread.id, info['cwd'], title, info['id'], backend='app-server',
                           native_settings=True,
@@ -416,7 +464,7 @@ class CodexChannel(CodexBot):
             if session.status_message:
                 try:
                     if session.status_webhook:
-                        webhook = await self.webhook_for()
+                        webhook = await self.webhook_for(await self.parent_channel(channel))
                         await webhook.edit_message(session.status_message, content=content,
                             thread=channel, allowed_mentions=upstream.NO_PING)
                     else:
@@ -572,7 +620,7 @@ class CodexChannel(CodexBot):
             thread = await self.start_session(args.get('prompt', ''), args.get('project', ''))
             return await respond(f'🚀 launched → {thread.mention}')
         if name == 'help':
-            lines = ['**Chert · Codex** — same command surface as #claude.']
+            lines = ['**Chert · Codex** — project and session commands.']
             for command in self.frontend.tree.get_commands():
                 if command.name in {'claude', 'astra'}:
                     continue
@@ -1045,6 +1093,8 @@ class CodexChannel(CodexBot):
             return
 
     async def board_tick(self):
+        if getattr(self.frontend, 'projects', None) is not None:
+            return
         if not upstream.BOARD or self.main_channel is None:
             return
         meta = self.store.meta
@@ -1083,7 +1133,8 @@ class CodexChannel(CodexBot):
         for key in set(self.store.sessions) - known:
             self.log_event(f'🚀 {self.store.sessions[key].name} arrived')
             if upstream.ANNOUNCE_NEW:
-                await self.frontend.say(self.main_channel, f'🚀 **{self.store.sessions[key].name}** → <#{key}>')
+                thread = await self.live_channel(self.store.sessions[key])
+                await self.frontend.say(await self.parent_channel(thread), f'🚀 **{self.store.sessions[key].name}** → <#{key}>')
         for session in list(self.store.sessions.values()):
             if session.status != 'ended' and session.codex_thread in self.live.subscribed and session.codex_thread not in subscribed:
                 await self.catch_up(session)

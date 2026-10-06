@@ -1,41 +1,22 @@
 #!/usr/bin/env python3
-"""Provision Chert's Discord category and channels from a bot token.
+"""Provision private project channels and an archived category.
 
-  ./setup_discord.py            # interactive: invite link, create channels, write ids to .env
-  ./setup_discord.py --check    # just log in and show what the bot can see
-  ./setup_discord.py --guild "My Server"   # pick a server when the bot is in several
-
-What it does
-  1. Reads DISCORD_BOT_TOKEN from .env (or prompts for it, hidden) and decodes the bot's
-     application id from the token itself, so it can print the exact invite URL — with the
-     permissions chert needs and the `bot` + `applications.commands` scopes (slash commands
-     silently fail without the second one).
-  2. Logs in. If the bot is in no server yet, it prints the invite URL and waits for you to
-     click it. If it's in several, it asks which one (or use --guild).
-  3. Finds or creates a private `chert` category. Both (default) uses #codex and
-     #claude, plus each backend's ask-all and shared-chat channels.
-     Codex-only uses #codex.
-     With --backend claude, it creates three text channels —
-       #claudes      one thread per live claude (the main channel)
-       #claude-chat  two-way bridge to the claude↔claude bus
-       #all-claudes  ask every claude at once; a summarizer claude answers
-     — sets their topics, and writes DISCORD_CHANNEL_ID / DISCORD_CHAT_CHANNEL_ID /
-     DISCORD_BROADCAST_CHANNEL_ID (and DISCORD_OWNER_ID if blank) into .env.
-Idempotent: reuses channels within the category and preserves existing permissions.
-
-Needs: `pip install -r requirements.txt` (discord.py, python-dotenv). The bot must have the
-Message Content intent enabled in the Developer Portal → Bot → Privileged Gateway Intents.
+Normal setup preserves existing channels. --project NAME DIR registers a project.
+--reset-channels --guild NAME explicitly deletes every channel in that server,
+including their messages and threads, before creating the project layout.
 """
 import argparse
 import asyncio
 import base64
 import getpass
+import json
 import os
 import re
 import sys
 from pathlib import Path
 
 from dotenv import dotenv_values
+from projects import Project, ProjectStore
 
 try:
     import discord
@@ -144,16 +125,127 @@ def invite_url(app_id):
                                    scopes=("bot", "applications.commands"))
 
 
-async def build(token, want_guild, check_only, backend='codex'):
-    channels = channels_for(backend)
+async def provision_projects(guild, env, reset=False, initial_projects=()):
+    """Only the explicit reset option deletes channels; normal setup is idempotent."""
+    store = ProjectStore(env.get('PROJECT_STATE_FILE') or HERE / 'private/projects.json')
+    if store.guild_id and store.guild_id != guild.id:
+        raise ValueError('The project registry belongs to a different server.')
+    root = Path(env.get('PROJECT_ROOT') or Path.home() / 'projects').expanduser()
+    seeds = list(initial_projects)
+    if not seeds and not store.projects:
+        seeds = [('chert', str(HERE))]
+    # Validate every directory before any destructive operation.
+    planned = []
+    from copy import copy
+    validator = copy(store)
+    validator.projects = dict(store.projects)
+    for name, directory in seeds:
+        name, directory = validator.validate(name, directory, root)
+        project = Project(name, directory, 0, env.get('DEFAULT_HARNESS') or 'codex')
+        if project.harness not in {'codex', 'claude'}:
+            raise ValueError('DEFAULT_HARNESS must be codex or claude.')
+        validator.projects[name] = project
+        planned.append(project)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                             send_messages_in_threads=True),
+    }
+    user_ids = {int(env.get('DISCORD_OWNER_ID') or guild.owner_id)}
+    user_ids.update(int(x.strip()) for x in (env.get('SPAWN_ALLOW_USERS') or '').split(',') if x.strip())
+    for user_id in user_ids:
+        member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+        overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+            send_messages_in_threads=True, read_message_history=True, use_application_commands=True)
+    if reset:
+        # Preserve configuration and old IDs for diagnosis; this is not a message backup.
+        from datetime import datetime, timezone
+        folder = HERE / 'private/channel-resets'
+        folder.mkdir(parents=True, exist_ok=True)
+        snapshot = {'guild_id': guild.id, 'guild_name': guild.name,
+                    'channels': [{'id': ch.id, 'name': ch.name, 'type': str(ch.type),
+                                  'category_id': getattr(ch, 'category_id', None)} for ch in guild.channels]}
+        target = folder / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '.json')
+        target.write_text(json.dumps(snapshot, indent=2))
+        # Save the Discord mappings before invalidating them. Native agent histories
+        # stay in their original homes and can be rediscovered in project channels.
+        import shutil
+        state_paths = [store.path, Path(env.get('CODEX_STATE_FILE') or HERE / 'private/codex-state.json'),
+                       HERE / 'bot_state.json']
+        for path in state_paths:
+            if path.exists():
+                shutil.copy2(path, folder / f'{target.stem}-{path.name}')
+        # Children before categories, using the exact selected guild's channel inventory.
+        for channel in sorted(guild.channels, key=lambda c: isinstance(c, discord.CategoryChannel)):
+            await channel.delete(reason='Owner requested reset to project channels')
+            print(f'  deleted {channel.name} ({channel.id})')
+        store.category_id = store.archive_category_id = 0
+        for project in store.projects.values():
+            project.channel_id = 0
+        codex_path = state_paths[1]
+        if codex_path.exists():
+            from codex_backend import SessionStore
+            sessions = SessionStore(codex_path)
+            sessions.sessions.clear()
+            for key in ('board_msg', 'board_body', 'hub'):
+                sessions.meta.pop(key, None)
+            sessions.save()
+        claude_path = state_paths[2]
+        if claude_path.exists():
+            data = json.loads(claude_path.read_text())
+            meta = data.get('_meta', {})
+            for key in ('board_msg', 'board_body'):
+                meta.pop(key, None)
+            temp = claude_path.with_suffix('.json.tmp')
+            temp.write_text(json.dumps({'_meta': meta}))
+            temp.replace(claude_path)
+    store.guild_id = guild.id
+    categories = {}
+    for name, key in [('projects', 'category_id'), ('archived', 'archive_category_id')]:
+        category = guild.get_channel(getattr(store, key))
+        if category is None and not reset:
+            category = discord.utils.get(guild.categories, name=name)
+        if category is None:
+            category = await guild.create_category(name, overwrites=overwrites)
+        setattr(store, key, category.id)
+        categories[name] = category
+    store.projects.update({p.name: p for p in planned})
+    store.save()
+    for project in store.projects.values():
+        channel = guild.get_channel(project.channel_id) if project.channel_id else None
+        if channel is None:
+            category = categories['archived' if project.archived else 'projects']
+            channel = await guild.create_text_channel(project.name, category=category, topic=project.topic)
+            project.channel_id = channel.id
+            print(f'  created project #{project.name} ({channel.id})')
+            store.save()
+    updates = {'DISCORD_GUILD_ID': str(guild.id), 'CHERT_BACKEND': env.get('CHERT_BACKEND') or 'both',
+               'DISCORD_OWNER_ID': str(env.get('DISCORD_OWNER_ID') or guild.owner_id),
+               'PROJECT_STATE_FILE': json.dumps(str(store.path))}
+    # No harness-specific channel may be fetched or recreated on restart.
+    for key in ('DISCORD_CHANNEL_ID', 'DISCORD_CODEX_CHANNEL_ID', 'DISCORD_CLAUDE_CHANNEL_ID',
+                'DISCORD_CODEX_BROADCAST_CHANNEL_ID', 'DISCORD_CODEX_CHAT_CHANNEL_ID',
+                'DISCORD_CHAT_CHANNEL_ID', 'DISCORD_BROADCAST_CHANNEL_ID',
+                'CODEX_PROMPT_CHANNEL_ID', 'PROMPT_CHANNEL_ID'):
+        updates[key] = '0'
+    write_env(updates)
+    return updates
+
+
+async def build(token, want_guild, check_only, backend='codex', reset_channels=False, initial_projects=()):
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True
     client = discord.Client(intents=intents)
     result = {}
+    started = False
 
     @client.event
     async def on_ready():
+        nonlocal started
+        if started:
+            return
+        started = True
         try:
             app_id = client.user.id
             guilds = list(client.guilds)
@@ -174,7 +266,10 @@ async def build(token, want_guild, check_only, backend='codex'):
                     print("still not in a server — run me again after inviting it.")
                     return
             if want_guild:
-                g = next((x for x in guilds if x.name == want_guild or str(x.id) == want_guild), None)
+                matches = [x for x in guilds if x.name == want_guild or str(x.id) == want_guild]
+                if len(matches) > 1:
+                    raise ValueError('Multiple servers have that name. Select the exact server ID with --guild.')
+                g = next(iter(matches), None)
                 if not g:
                     print(f"no server named/id {want_guild!r}; the bot is in: " + ", ".join(f"{x.name} ({x.id})" for x in guilds))
                     return
@@ -188,62 +283,23 @@ async def build(token, want_guild, check_only, backend='codex'):
                 g = guilds[int(pick) - 1]
             print(f"server: {g.name} ({g.id}), owner {g.owner_id}")
             if check_only:
-                for name, key, _ in channels:
-                    ch = discord.utils.get(g.text_channels, name=name)
-                    print(f"  #{name:<12} {'exists ' + str(ch.id) if ch else 'missing'}")
+                store = ProjectStore(read_env().get('PROJECT_STATE_FILE') or HERE / 'private/projects.json')
+                for project in store.projects.values():
+                    ch = g.get_channel(project.channel_id)
+                    print(f"  #{project.name:<20} {'exists ' + str(ch.id) if ch else 'missing'}")
                 me = g.me
                 missing = [p for p, v in needed_permissions() if v and not getattr(me.guild_permissions, p)]
                 print("  permissions:", "ok" if not missing else "MISSING " + ", ".join(missing))
-                result['checked'] = not missing and all(
-                    discord.utils.get(g.text_channels, name=name) is not None for name, _, _ in channels)
+                result['checked'] = not missing and store.guild_id == g.id and all(
+                    g.get_channel(p.channel_id) is not None for p in store.projects.values())
                 return
-            cat = discord.utils.get(g.categories, name="chert")
-            if cat is None:
-                # Server administrators retain access to private channels.
-                overwrites = {
-                    g.default_role: discord.PermissionOverwrite(view_channel=False),
-                    g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                     send_messages_in_threads=True),
-                }
-                env = read_env()
-                user_ids = {int(env.get('DISCORD_OWNER_ID') or g.owner_id)}
-                user_ids.update(int(x.strip()) for x in (env.get('SPAWN_ALLOW_USERS') or '').split(',')
-                                if x.strip() and x.strip() != '0')
-                for user_id in user_ids:
-                    member = g.get_member(user_id) or await g.fetch_member(user_id)
-                    overwrites[member] = discord.PermissionOverwrite(
-                        view_channel=True, send_messages=True, send_messages_in_threads=True,
-                        read_message_history=True, use_application_commands=True)
-                cat = await g.create_category('chert', overwrites=overwrites)
-            updates = {}
-            env = read_env()
-            for name, key, topic in channels:
-                ch = existing_channel(g, cat, name, key, env)
-                if ch is None:
-                    ch = await g.create_text_channel(name, category=cat, topic=topic)
-                    print(f"  created #{name} ({ch.id})")
-                else:
-                    print(f"  found   #{name} ({ch.id})")
-                    if not ch.topic:
-                        try:
-                            await ch.edit(topic=topic)
-                        except discord.HTTPException:
-                            pass
-                updates[key] = str(ch.id)
-            env = read_env()
-            updates['CHERT_BACKEND'] = backend
-            if backend == 'both':
-                updates['DISCORD_CHANNEL_ID'] = updates['DISCORD_CODEX_CHANNEL_ID']
-            if not env.get("DISCORD_OWNER_ID"):
-                updates["DISCORD_OWNER_ID"] = str(g.owner_id)
-            write_env(updates)
-            result.update(updates)
-            print("\nwrote to .env: " + ", ".join(f"{k}={v}" for k, v in updates.items()))
-            if backend == 'both':
-                print('\nstart the bridge and type a prompt in #codex or #claude 🔭')
-            else:
-                command = 'codex' if backend == 'codex' else 'claude'
-                print(f"\nstart the bridge and type  /{command} hello  in #{channels[0][0]}  🔭")
+            missing = [p for p, needed in needed_permissions() if needed and not getattr(g.me.guild_permissions, p)]
+            if missing:
+                raise ValueError('The bot needs these permissions before provisioning: ' + ', '.join(missing))
+            env = {**read_env(), 'CHERT_BACKEND': backend}
+            result.update(await provision_projects(g, env, reset_channels, initial_projects))
+            print('Project channels configured. Use /project <name> <dir> and /harness.')
+            return
         except discord.Forbidden as e:
             print(f"\nthe bot lacks a permission: {e}. Re-invite it with:\n  {invite_url(client.user.id)}")
         finally:
@@ -265,7 +321,11 @@ def main():
     ap.add_argument("--guild", help="server name or id when the bot is in several")
     ap.add_argument("--token", help="bot token (else .env / hidden prompt)")
     ap.add_argument('--backend', choices=('both', 'codex', 'claude'), help='default: CHERT_BACKEND or both')
+    ap.add_argument('--reset-channels', action='store_true', help='Delete ALL channels in --guild before provisioning projects')
+    ap.add_argument('--project', nargs=2, action='append', default=[], metavar=('NAME', 'DIR'), help='Seed a project (repeatable)')
     a = ap.parse_args()
+    if a.reset_channels and (not a.guild or a.check):
+        ap.error('--reset-channels requires an explicit --guild and cannot be combined with --check')
     env = read_env()
     backend = a.backend or os.environ.get('CHERT_BACKEND') or env.get('CHERT_BACKEND') or 'both'
     token = a.token or os.environ.get('DISCORD_BOT_TOKEN') or env.get("DISCORD_BOT_TOKEN") or ""
@@ -279,7 +339,7 @@ def main():
     app_id = app_id_from_token(token)
     if app_id:
         print(f"invite link (also shown if the bot turns out not to be in a server yet):\n  {invite_url(app_id)}\n")
-    result = asyncio.run(build(token, a.guild, a.check, backend))
+    result = asyncio.run(build(token, a.guild, a.check, backend, a.reset_channels, a.project))
     if (a.check and not result.get('checked')) or not result:
         sys.exit(1)
 

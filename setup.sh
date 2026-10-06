@@ -44,7 +44,7 @@ fi
 command -v tmux >/dev/null || { echo 'Install tmux, then rerun setup.'; exit 1; }
 if [[ "$BACKEND" == claude || "$BACKEND" == both ]]; then
   if ! command -v claude >/dev/null && [[ ! -x "$HOME/.local/bin/claude" ]]; then
-    echo 'Claude Code is not installed. #claude will need installation and login before use.'
+    echo 'Claude Code is not installed. Claude projects will need installation and login before use.'
   fi
 fi
 umask 077
@@ -78,7 +78,7 @@ if backend in {'codex', 'both'}:
         paths.append(str(Path(node).resolve().parent))
     paths += ['/usr/local/bin', '/usr/bin', '/bin']
     write_env({'PATH': json.dumps(':'.join(dict.fromkeys(paths)))})
-if backend in {'codex', 'both'} and not read_env().get('PROJECT_ROOT'):
+if not read_env().get('PROJECT_ROOT'):
     projects = Path.home() / 'projects'
     projects.mkdir(exist_ok=True)
     write_env({'PROJECT_ROOT': str(projects)})

@@ -427,7 +427,8 @@ def main():
     config = Config.from_env()
     config.channel_id = int(os.environ.get('DISCORD_CODEX_CHANNEL_ID') or config.channel_id)
     claude_id = int(os.environ.get('DISCORD_CLAUDE_CHANNEL_ID') or 0)
-    if claude_id == config.channel_id or (not claude_id and os.environ.get('CHERT_BACKEND', 'both') == 'both'):
+    project_mode = bool(os.environ.get('DISCORD_GUILD_ID'))
+    if not project_mode and (claude_id == config.channel_id or (not claude_id and os.environ.get('CHERT_BACKEND', 'both') == 'both')):
         raise SystemExit('Run setup_discord.py --backend both to configure distinct #codex and #claude channels.')
     import shutil
     binary = os.environ.get('CODEX_BIN') or shutil.which('codex') or str(Path.home() / '.local/bin/codex')
@@ -449,4 +450,8 @@ def main():
     config.state_file.parent.mkdir(parents=True, exist_ok=True)
     with open(str(config.state_file) + '.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        SharedFrontend(config, runner, SessionStore(config.state_file), claude_id).run(config.token)
+        frontend = SharedFrontend
+        if project_mode:
+            from project_frontend import ProjectFrontend
+            frontend = ProjectFrontend
+        frontend(config, runner, SessionStore(config.state_file), claude_id).run(config.token)

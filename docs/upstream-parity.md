@@ -2,6 +2,38 @@
 
 Source of truth: [ceselder/chert at 0bd0902](https://github.com/ceselder/chert/tree/0bd0902468437823863c2a38ddd5c7e01c9a61bd), the current upstream `main` when audited on 2026-10-02.
 
+## Current project interface (2026-10-06)
+
+The project interface replaces the earlier harness-channel layout. `/project name dir`
+registers an existing directory on the bot host and creates a channel under `projects`.
+`/harness` chooses the default for new sessions; tracked threads retain their own
+Codex or Claude harness. `/archive` and `/unarchive` move the channel between
+`projects` and `archived`. Project bindings, defaults and archive state are durable.
+
+There are no harness-specific main, broadcast or chat channels in this mode.
+`/all`, `/hub`, `/restartall`, `/reviveall` and `/cleanup` are removed; `/sessions`
+lists both harnesses for the current project. Launch commands use the channel's
+registered directory rather than a `project` option or the first prompt word.
+Discovery selects the most specific registered directory containing the session's
+working directory and ignores unregistered or archived projects.
+
+`discord_bot.py` and `app.py` remain pinned upstream. The project frontend adapts
+Claude launch and polling to avoid creating upstream's harness channels. Claude
+is still disabled in production; no live Claude inference is claimed.
+
+Verification: project tests cover routing, persistence, concurrency, default
+changes without moving existing threads, archive/unarchive, permissions,
+project-directory discovery, actual-parent webhook delivery, startup without
+legacy channels, and explicit reset versus non-destructive setup. The isolated
+runtime check `tests/live_codex_activity.py --projects` uses real Codex turns and
+in-memory Discord channels to verify project cwd, attached launches, and continued
+Codex replies after changing the project's default to Claude. Live deployment
+results are reported separately; a passing unit test is not a production test.
+
+The inventory below documents the earlier compatibility frontend and native
+transport behavior. The project-mode changes above supersede its channel,
+project-selection, fleet-command, board and shared-chat descriptions.
+
 ## Finding
 
 The earlier Codex fork was **not functionally equivalent** to upstream. Its nine slash commands and separately implemented frontend omitted much of upstream's 34-command surface. Matching the appearance of a thread did not establish functional parity.

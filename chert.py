@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 def main():
     load_dotenv(Path(__file__).with_name('.env'))
     backend = os.environ.get('CHERT_BACKEND', 'both').strip().lower()
-    if backend in {'both', 'codex'}:
+    if backend in {'both', 'codex'} or os.environ.get('DISCORD_GUILD_ID'):
         from shared_frontend import main as run
     elif backend == 'claude':
         from discord_bot import main as run

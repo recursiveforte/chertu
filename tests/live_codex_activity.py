@@ -2,6 +2,8 @@
 
 Run on the deployment host: .venv/bin/python tests/live_codex_activity.py
 Use --model to exercise the real /model command and subsequent inference instead.
+Use --projects to check project launches, routing, and harness changes with a real
+isolated Codex runtime and in-memory Discord channels.
 No Discord token, production daemon, or production conversation is used.
 """
 import asyncio
@@ -63,7 +65,76 @@ async def check_model(frontend, session, channel, consumer):
     print(f'Real /model and completed inference: PASS ({before} → {actual})', flush=True)
 
 
-async def main(model_check=False):
+async def check_projects(root, config, consumer_factory):
+    from projects import Project, ProjectStore
+    from project_frontend import ProjectFrontend
+
+    projects = ProjectStore(root / 'projects.json')
+    projects.guild_id = 1
+    projects.projects['work'] = Project('work', str(config.project_root), 100)
+    projects.save()
+    frontend = ProjectFrontend(config, CodexRunner(), SessionStore(config.state_file), projects=projects)
+    frontend.owner = frontend.codex.owner = 7
+    frontend._connection.user = SimpleNamespace(id=999)
+    parent = SimpleNamespace(id=100, parent_id=None, edit=AsyncMock())
+    parent.edit.return_value = parent
+    thread = SimpleNamespace(id=300, parent_id=100, parent=parent, archived=False, mention='<#300>')
+    source = SimpleNamespace(id=300, channel=parent, author=SimpleNamespace(id=7, bot=False),
+        content='Reply exactly CHERT_PROJECT_OK. Do not use tools.', webhook_id=None,
+        attachments=[], add_reaction=AsyncMock(), create_thread=AsyncMock(return_value=thread))
+    frontend.project_channels[100] = parent
+    frontend.main_channel = frontend.codex.main_channel = parent
+    frontend.save_attachments = AsyncMock(return_value='')
+    frontend.retitle = Mock()
+    adapter = frontend.codex
+    adapter.live_channel = AsyncMock(return_value=thread)
+    messages = []
+    async def post_as(channel, name, content, thread_id=None, **kwargs):
+        assert channel is parent, 'Reply sent to a different project'
+        messages.append(content)
+        return SimpleNamespace(id=len(messages))
+    frontend.post_as = post_as
+    adapter.webhook_for = AsyncMock(return_value=SimpleNamespace(edit_message=AsyncMock()))
+    await adapter.live.connect()
+    consumer = asyncio.create_task(consumer_factory(adapter))
+    try:
+        await frontend.on_message(source)
+        assert 300 in adapter.store.sessions, 'Project prompt did not create its session'
+        session = adapter.store.sessions[300]
+        async def completed():
+            async with asyncio.timeout(120):
+                while session.status not in {'idle', 'error', 'interrupted'}:
+                    if consumer.done():
+                        await consumer
+                    await asyncio.sleep(.1)
+            await adapter.live.notifications.join()
+            assert session.status == 'idle', session.status
+        await completed()
+        assert any('CHERT_PROJECT_OK' in m for m in messages), 'Reply missing from project thread'
+        native = (await adapter.live.call('thread/read', {'threadId': session.codex_thread,
+                      'includeTurns': False}))['thread']
+        assert Path(native['cwd']) == config.project_root
+        source.create_thread.assert_awaited_once()
+        print('Project prompt → correct native directory and attached Discord thread: PASS', flush=True)
+
+        project = projects.projects['work']
+        await frontend.set_harness(project, 'claude')
+        assert frontend.backend_for(parent) == 'claude'
+        assert frontend.backend_for(thread) == 'codex'
+        assert ProjectStore(projects.path).projects['work'].harness == 'claude'
+        reply = SimpleNamespace(channel=thread, author=source.author, webhook_id=None, attachments=[],
+                                content='Reply exactly CHERT_EXISTING_CODEX_OK. Do not use tools.', add_reaction=AsyncMock())
+        await frontend.on_message(reply)
+        await completed()
+        assert any('CHERT_EXISTING_CODEX_OK' in m for m in messages), 'Existing thread changed harness'
+        print('Default harness change persists; existing thread still completes a real Codex turn: PASS', flush=True)
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await frontend.close()
+
+
+async def main(model_check=False, project_check=False):
     binary = shutil.which('codex') or str(Path.home()/'.local/bin/codex')
     original_home = Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
     with tempfile.TemporaryDirectory(prefix='chert-qa-', dir='/tmp') as temporary:
@@ -88,6 +159,16 @@ async def main(model_check=False):
                         raise RuntimeError('Isolated app-server exited before opening its socket')
                     await asyncio.sleep(.1)
             config = Config('unused', 100, 7, set(), project, root/'state.json', discover=False, live_socket=socket)
+            if project_check:
+                async def consume_project(adapter):
+                    while True:
+                        event = await adapter.live.notifications.get()
+                        try:
+                            await adapter.handle_live_event(event)
+                        finally:
+                            adapter.live.notifications.task_done()
+                await check_projects(root, config, consume_project)
+                return
             frontend = SharedFrontend(config, CodexRunner(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
             live = adapter.live
@@ -167,4 +248,4 @@ async def main(model_check=False):
 
 
 if __name__ == '__main__':
-    asyncio.run(main(model_check='--model' in sys.argv))
+    asyncio.run(main(model_check='--model' in sys.argv, project_check='--projects' in sys.argv))

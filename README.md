@@ -2,21 +2,20 @@
 
 # chert 🔭 — one Discord frontend, two coding backends
 
-This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream Chert as its source of truth**. One bot, one command registry, and the upstream presentation serve two channels:
+This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream Chert as its source of truth**. One bot and one command registry serve **one channel per project**. Each project binds a directory on the bot host to a Discord channel and has a default harness: Codex or Claude.
 
-- **`#codex`** → Codex's native app-server.
-- **`#claude`** → the original Claude Code integration.
+Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.
 
-Type a prompt in either channel. The bot adds 🚀/📡 reactions and opens a thread on your message. Reply in that thread to continue. A leading project directory selects that project: `my-project fix the tests`. Mentions and slash commands also work.
+`/archive` moves the project channel, including its history and threads, into **archived**. Archived projects reject new prompts; already-running agents can finish. `/unarchive` moves it back into **projects**. Both commands accept an optional project name. Project bindings and harness choices survive restarts.
 
 The [parity audit](docs/upstream-parity.md) inventories every upstream command, its backend mapping, verified behavior and limitations. The original [Claude reference](docs/claude-backend.md) is retained. `discord_bot.py` and `app.py` are the pinned upstream implementations, not independently rewritten copies.
 
 ## Shared behavior
 
 - Automatic session discovery, attached threads, per-session webhook identities and avatars.
-- The upstream command surface in both channels: history/search/resume, forks, rename, model/effort/fast, permission modes, stop/restart/revive, mute, countdowns and fleet controls.
+- The upstream session controls: history/search/resume, forks, rename, model/effort/fast, permission modes, stop/restart/revive, mute and countdowns.
 - Approval buttons and user-input forms. Codex uses native approval responses; Claude retains upstream's terminal menus.
-- Uploads, opened images, `hearth-send`, pinned boards, ask-all summaries and shared chat.
+- Uploads, opened images, and `hearth-send` file delivery.
 - Durable session mappings, backup recovery and native reboot revival.
 - The upstream Signalscope dashboard for both backends, plus shared disk/S3 tools.
 
@@ -31,7 +30,7 @@ npm install -g @openai/codex
 codex login                 # or: codex login --device-auth
 ```
 
-Install and log into Claude Code if you want to use it. If you have no Claude account, set `CLAUDE_ENABLED=0` in `.env`: the channel stays configured and the bot explains that it is unavailable without launching a login screen.
+Install and log into Claude Code if you want to use it. If you have no Claude account, set `CLAUDE_ENABLED=0` in `.env`: projects remain available through Codex and the bot explains that Claude is unavailable.
 
 Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications), enable **Message Content Intent**, then:
 
@@ -41,9 +40,9 @@ cd chert
 ./setup.sh --backend both
 ```
 
-Setup prompts privately for the token, prints the invitation link, and provisions a private `chert` category. It creates `#codex`, `#claude`, and the upstream-style auxiliary channels `#all-codex`, `#codex-chat`, `#all-claudes`, and `#claude-chat`.
+Setup prompts privately for the token, prints the invitation link, and provisions private `projects` and `archived` categories. The initial `#chert` project uses the installation directory. Add more projects with `/project`; no harness-specific or broadcast/chat channels are created.
 
-Put projects beneath `~/projects`, or set `PROJECT_ROOT`. Both backends use upstream's project resolver: a leading existing project directory or explicit path selects that directory; otherwise the root is used. Discovered sessions keep their original working directory.
+The `/project` directory must already exist on the bot host. Absolute paths and `~` work; relative paths resolve beneath `PROJECT_ROOT` (default `~/projects`). Prompts are passed intact, without treating their first word as a directory. Discovered sessions are placed in the project whose directory most closely contains their working directory; sessions outside registered projects are ignored.
 
 Services:
 
@@ -58,17 +57,17 @@ Updating/restarting the bot does not restart the shared Codex daemon. Existing t
 
 ## Commands
 
-The primary command names, arguments, defaults and permission metadata come from upstream. They operate on the backend selected by the channel/thread:
+Session commands use the harness recorded for the thread. Project channels select the default for new sessions:
 
 | Operation | Commands |
 | --- | --- |
+| Projects | `/project name dir`, `/harness [name]`, `/archive [name]`, `/unarchive [name]` |
 | Launch | Plain prompt, `/codex`, `/claude`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
 | Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/mode`, `/yolo`, `/rename` |
 | Control | `/stop`, `/refresh`, `/restart`, `/revive`, `/kill` |
 | Inspect | `/log`, `/screen`, `/key`, `/help` |
 | Notifications / budget | `/mute`, `/unmute`, `/supernova` |
-| Fleet | `/all`, `/restartall`, `/reviveall`, `/cleanup`, `/hub` |
 | Host / reviews | `/disk`, `/backup`, `/s3`, `/offload`, `/restore`, `/feldspar` |
 
 The `!` forms are also available. `/fork` defaults to the same backend; selecting the other backend performs a conversation handoff. `/model`, `/globalmodel`, and `/fast` remain owner-only.
@@ -79,7 +78,7 @@ does not interrupt a running turn; messages sent during that turn still steer th
 current model. The choice remains queued until Codex accepts a new turn. `/effort`
 works the same way. `/globalmodel` also changes the default for new sessions.
 
-A message in `#all-codex` or `#all-claudes` asks every session of that backend and collects replies for its persistent summarizer. `!all` broadcasts without summarization. The `*-chat` channels mirror their shared JSONL chat buses.
+Harness-wide broadcast, hub and fleet commands are removed from the project interface.
 
 ## Configuration
 
@@ -87,9 +86,11 @@ See [.env.example](.env.example), and [the upstream settings reference](docs/cla
 
 | Setting | Purpose |
 | --- | --- |
-| `CHERT_BACKEND=both` | Shared frontend with both channels; `codex` supports a Codex-only shared frontend. `claude` retains the original standalone entrypoint. |
-| `DISCORD_CODEX_CHANNEL_ID`, `DISCORD_CLAUDE_CHANNEL_ID` | Primary channels; setup fills them in. |
-| `DISCORD_OWNER_ID`, `SPAWN_ALLOW_USERS` | Owner and additional permitted users. Both channels use the same policy. |
+| `CHERT_BACKEND=both` | Install both harness integrations. Project mode uses the shared frontend. |
+| `DISCORD_GUILD_ID` | Server using project channels; setup fills it in. |
+| `PROJECT_STATE_FILE` | Project/channel registry; default `private/projects.json`. |
+| `DEFAULT_HARNESS` | Default for newly registered projects; `codex` unless configured otherwise. |
+| `DISCORD_OWNER_ID`, `SPAWN_ALLOW_USERS` | Owner and additional permitted users. All project channels use the same policy. |
 | `CLAUDE_ENABLED` | Set `0` until Claude is installed and authenticated. |
 | `PROJECT_ROOT` | Project root for new sessions; default `~/projects`. |
 | `CODEX_BIN` | Codex executable; setup stores its absolute path. |
@@ -98,8 +99,6 @@ See [.env.example](.env.example), and [the upstream settings reference](docs/cla
 | `CODEX_DISCOVER`, `CODEX_DISCOVERY_INTERVAL` | Discovery enabled by default, every five seconds. |
 | `CODEX_SANDBOX`, `CODEX_NETWORK_ACCESS` | Permissions for newly created Codex sessions. Existing sessions retain their configuration. |
 | `CODEX_STATE_FILE` | Default `private/codex-state.json`; Claude state remains `bot_state.json`. |
-| `CODEX_CHAT_LOG` | Default `~/shared/codex_chat/msgs.jsonl`. |
-| `CODEX_PROMPT_CHANNEL_ID`, `CODEX_PROMPT_TARGET` | Optional AGENTS.md attachment sync, matching upstream's CLAUDE.md workflow. |
 | `S3_BUCKET` and AWS configuration | Enable upstream Ash Twin backup/offload/restore for both backends. |
 
 The bot suppresses model-generated mentions. New categories are private; Discord administrators retain access. Existing channel permissions are preserved. Adding an allowed user also requires granting channel access in Discord.
@@ -118,7 +117,16 @@ sudo systemctl restart chert-discord-bridge
 
 Back up the state files together with the corresponding agent homes. `.env`, private logs, session data and credentials are gitignored. S3 features require an explicitly configured private bucket; offload retains upstream's verification/confirmation flow.
 
-For an existing Codex-only installation, run `./setup.sh --backend both`. It preserves `#codex`, its threads, webhook, and state, and adds `#claude`. You do not need a Claude account to keep using Codex.
+For an existing installation, normal setup leaves existing channels alone. To replace **all channels** in a specific server with the project layout, stop the bridge first and run:
+
+```bash
+sudo systemctl stop chert-discord-bridge
+.venv/bin/python setup_discord.py --guild cheru-land --reset-channels \
+  --project chert /home/cheru/Code/chert
+sudo systemctl start chert-discord-bridge
+```
+
+Use the actual project directory on your host; repeat `--project NAME DIR` to seed additional projects. The explicit reset permanently deletes Discord channels, messages and threads. It saves the old channel inventory and session mappings under `private/channel-resets/`; this is not a message backup. Native Codex/Claude histories remain on disk, and live sessions are rediscovered under their registered projects.
 
 ## License
 

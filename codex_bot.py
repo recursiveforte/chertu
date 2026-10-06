@@ -54,7 +54,7 @@ class Config:
     def from_env(cls):
         token = os.environ.get('DISCORD_BOT_TOKEN', '').strip()
         channel = int(os.environ.get('DISCORD_CODEX_CHANNEL_ID') or os.environ.get('DISCORD_CHANNEL_ID') or 0)
-        if not token or not channel:
+        if not token or (not channel and not os.environ.get('DISCORD_GUILD_ID')):
             raise ValueError('Run setup_discord.py to set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID.')
         root = Path(os.environ.get('PROJECT_ROOT') or str(Path.home() / 'projects')).expanduser().resolve()
         if not root.is_dir():
@@ -173,10 +173,14 @@ class CodexBot(discord.Client):
                         self.store.save()
                     if session is not None and session.discord_thread in self.workers:
                         continue  # Don't mirror our own exec output twice.
+                    if session is None:
+                        parent = await self.discovery_channel(info)
+                        if parent is None:
+                            continue
                     await self.live.attach(info['id'])
                     if session is None:
                         title = info.get('name') or info.get('agentNickname') or Path(info['cwd']).name or 'Codex'
-                        thread = await self.main_channel.create_thread(
+                        thread = await parent.create_thread(
                             name=thread_title(title), type=discord.ChannelType.public_thread,
                             auto_archive_duration=1440)
                         session = Session(thread.id, info['cwd'], title, info['id'],
@@ -228,6 +232,9 @@ class CodexBot(discord.Client):
 
     async def observe_session(self, session, info):
         return None
+
+    async def discovery_channel(self, info):
+        return self.main_channel
 
     async def live_channel(self, session):
         channel = self.get_channel(session.discord_thread) or await self.fetch_channel(session.discord_thread)
