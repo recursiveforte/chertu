@@ -2,7 +2,6 @@
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
 import logging
 import os
 from pathlib import Path
@@ -294,9 +293,8 @@ class ProjectFrontend(SharedFrontend):
 
     async def set_archived(self, project, archived):
         async with self.project_lock:
-            changed = replace(project, archived=archived)
             channel = self.project_channels.get(project.channel_id) or await self.fetch_channel(project.channel_id)
-            channel = await channel.edit(category=await self.category(archived), topic=changed.topic,
+            channel = await channel.edit(category=await self.category(archived),
                                          reason='Project archived' if archived else 'Project reopened')
             project.archived = archived
             self.project_channels[project.channel_id] = channel
@@ -306,12 +304,13 @@ class ProjectFrontend(SharedFrontend):
         if harness not in {'codex', 'claude'}:
             raise ValueError('Choose codex or claude.')
         async with self.project_lock:
-            changed = replace(project, harness=harness)
-            channel = self.project_channels.get(project.channel_id) or await self.fetch_channel(project.channel_id)
-            channel = await channel.edit(topic=changed.topic)
+            previous = project.harness
             project.harness = harness
-            self.project_channels[project.channel_id] = channel
-            self.projects.save()
+            try:
+                self.projects.save()
+            except Exception:
+                project.harness = previous
+                raise
 
     def install_project_commands(self):
         # The launch command's directory is fixed by its project channel.

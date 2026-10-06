@@ -7,7 +7,9 @@ Source of truth: [ceselder/chert at 0bd0902](https://github.com/ceselder/chert/t
 The project interface replaces the earlier harness-channel layout. `/project name dir`
 registers an existing directory on the bot host and creates a channel under `projects`.
 `/harness` chooses the default for new sessions; tracked threads retain their own
-Codex or Claude harness. `/archive` and `/unarchive` move the channel between
+Codex or Claude harness. Harness choices are saved locally without editing the
+Discord channel topic, so repeated changes do not wait for Discord metadata rate
+limits. `/archive` and `/unarchive` move the channel between
 `projects` and `archived`. Project bindings, defaults and archive state are durable.
 
 There are no harness-specific main, broadcast or chat channels in this mode.

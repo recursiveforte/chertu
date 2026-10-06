@@ -162,9 +162,21 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_discord_edit_does_not_change_saved_project(self):
         project = self.projects.projects['one']
         self.channels[100].edit.side_effect = RuntimeError('network')
+        self.bot.category = AsyncMock(return_value=SimpleNamespace(id=8))
         with self.assertRaises(RuntimeError):
-            await self.bot.set_harness(project, 'claude')
-        self.assertEqual(project.harness, 'codex')
+            await self.bot.set_archived(project, True)
+        self.assertFalse(project.archived)
+
+    async def test_harness_changes_do_not_wait_for_discord_channel_edit_rate_limits(self):
+        project = self.projects.projects['one']
+        for harness in ('claude', 'codex', 'claude'):
+            await self.bot.set_harness(project, harness)
+        self.channels[100].edit.assert_not_called()
+        self.assertEqual(ProjectStore(self.projects.path).projects['one'].harness, 'claude')
+        with patch.object(self.projects, 'save', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                await self.bot.set_harness(project, 'codex')
+        self.assertEqual(project.harness, 'claude')
 
     async def test_commands_reject_unallowed_users(self):
         self.bot.create_project = AsyncMock()

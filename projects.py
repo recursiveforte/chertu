@@ -21,8 +21,7 @@ class Project:
 
     @property
     def topic(self):
-        return f'Project: {self.name} · {self.directory} · Default harness: {self.harness}' + (
-            ' · Archived; /unarchive to reopen' if self.archived else ' · /harness to change')
+        return f'Project: {self.name} · {self.directory} · /harness to choose an agent · /archive or /unarchive'
 
 
 class ProjectStore:
