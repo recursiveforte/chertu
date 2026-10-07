@@ -293,10 +293,8 @@ class CodexEvents:
                         "\n".join(i.get("text", "") for i in item.get("content", [])),
                         key,
                     )
-                if item.get("type") == "imageView" and item.get("path") and not session.muted:
-                    await self.backend.frontend.deliver_session_file(
-                        item["path"], "", None, session.codex_thread, session.cwd
-                    )
+                # imageView means the agent inspected a local image, not that it
+                # requested an upload. File delivery is explicit via hearth-send.
                 if item.get("type") in {
                     "agentMessage",
                     "commandExecution",

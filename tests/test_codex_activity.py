@@ -1,6 +1,7 @@
 import asyncio
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -23,6 +24,34 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         await self.event(
             "turn/started", turn={"id": turn, "status": "inProgress", "startedAt": time.time() - 30}
         )
+
+    async def test_viewing_an_image_does_not_upload_it_to_discord(self):
+        self.host.deliver_session_file = AsyncMock()
+        await self.start()
+        for path in ("/uploads/user-image.png", "/project/generated-image.png"):
+            with self.subTest(path=path):
+                for method in ("item/started", "item/completed"):
+                    await self.event(
+                        method,
+                        turnId="one",
+                        item={"id": path, "type": "imageView", "path": path},
+                    )
+                self.host.deliver_session_file.assert_not_called()
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        self.assertEqual(self.session.status, "idle")
+
+    async def test_explicit_image_delivery_still_uploads_to_the_session(self):
+        path = Path(self.tmp.name) / "image.png"
+        path.write_bytes(b"image fixture")
+        await self.host.deliver_session_file(
+            str(path), "Requested image", None, self.session.codex_thread, self.session.cwd
+        )
+        self.channel.send.assert_awaited_once()
+        sent = self.channel.send.call_args
+        self.assertEqual(sent.args, ("Requested image",))
+        self.assertEqual(sent.kwargs["file"].filename, "image.png")
+        self.assertEqual(sent.kwargs["file"].fp.read(), b"image fixture")
+        sent.kwargs["file"].close()
 
     async def test_activity_changes_do_not_rename_the_thread(self):
         self.channel.name = "🚀 original"

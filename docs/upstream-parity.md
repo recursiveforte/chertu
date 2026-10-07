@@ -43,6 +43,11 @@ setup and from Discord uses one implementation.
 - Project directory matching for discovery, with the most specific match winning.
 - Per-session webhook identities, upstream message formatting, attachments, and
   `hearth-send` file delivery.
+  Codex image inspection does not automatically upload the viewed file to Discord;
+  outgoing files use explicit delivery. Regression tests verify that `imageView`
+  events do not echo uploads or other local images and that explicit image delivery
+  still targets the session. Discord sends are mocked; this has not been exercised
+  end to end in production Discord.
   The frontend replaces case-insensitive `discord` with `chat` in outgoing
   webhook usernames to prevent Discord's reserved-name HTTP 400 errors. Session
   titles and avatar seeds are preserved. Regression tests exercise the outgoing
