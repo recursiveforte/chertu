@@ -7,6 +7,7 @@ isolated Codex runtime and in-memory Discord channels.
 Use --close to verify native closure without resuming history.
 Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
 Use --queue to verify native queuing and Discord prompt reactions.
+Use --bursts to verify rapid project messages share one native conversation.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -214,7 +215,7 @@ async def check_queue(frontend, session, channel, consumer):
     )
 
 
-async def check_projects(root, config, consumer_factory, worktrees=False):
+async def check_projects(root, config, consumer_factory, worktrees=False, bursts=False):
     from chert.projects import Project, ProjectStore
     from chert.discord.frontend import Frontend
 
@@ -262,7 +263,64 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
 
             repository(config.project_root)
             await frontend.project_commands.set_worktrees(projects.projects["work"], True)
-        await frontend.on_message(source)
+        if bursts:
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def create(**kwargs):
+                entered.set()
+                await release.wait()
+                return thread
+
+            source.create_thread.side_effect = create
+            followers = [
+                SimpleNamespace(
+                    **{
+                        **vars(source),
+                        "id": identifier,
+                        "content": f"Reply exactly CHERT_BURST_{identifier}. Do not use tools.",
+                        "create_thread": AsyncMock(side_effect=AssertionError("Duplicate thread")),
+                        "add_reaction": AsyncMock(),
+                        "remove_reaction": AsyncMock(),
+                    }
+                )
+                for identifier in (301, 302)
+            ]
+            adapter.live.call = AsyncMock(wraps=adapter.live.call)
+            launch = asyncio.create_task(frontend.on_message(source))
+            await asyncio.wait_for(entered.wait(), 30)
+            pending = [asyncio.create_task(frontend.on_message(m)) for m in followers]
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(launch, *pending), 60)
+            async with asyncio.timeout(180):
+                while not all(
+                    any(c.args == ("✅",) for c in m.add_reaction.await_args_list)
+                    for m in [source, *followers]
+                ):
+                    if consumer.done():
+                        await consumer
+                    await asyncio.sleep(0.1)
+            assert len(adapter.store.sessions) == 1
+            assert sum(
+                c.args[0] == "thread/start" for c in adapter.live.call.await_args_list
+            ) == 1
+            history = await adapter.live.call(
+                "thread/turns/list",
+                {"threadId": adapter.store.sessions[300].codex_thread,
+                 "limit": 20, "sortDirection": "asc", "itemsView": "summary"},
+            )
+            clients = [
+                item.get("clientId") for turn in history["data"]
+                for item in turn.get("items", []) if item.get("type") == "userMessage"
+            ]
+            assert clients == ["chert:300", "chert:301", "chert:302"], clients
+            assert all(
+                any(f"CHERT_BURST_{m.id}" in text for text in messages) for m in followers
+            )
+            print("Three overlapping project prompts → one native thread, FIFO completion: PASS",
+                  flush=True)
+        else:
+            await frontend.on_message(source)
         assert 300 in adapter.store.sessions, "Project prompt did not create its session"
         session = adapter.store.sessions[300]
 
@@ -369,6 +427,7 @@ async def main(
     close_check=False,
     worktree_check=False,
     queue_check=False,
+    burst_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -412,7 +471,7 @@ async def main(
                 discover=False,
                 live_socket=socket,
             )
-            if project_check or worktree_check:
+            if project_check or worktree_check or burst_check:
 
                 async def consume_project(adapter):
                     while True:
@@ -422,7 +481,9 @@ async def main(
                         finally:
                             adapter.live.notifications.task_done()
 
-                await check_projects(root, config, consume_project, worktrees=worktree_check)
+                await check_projects(
+                    root, config, consume_project, worktrees=worktree_check, bursts=burst_check
+                )
                 return
             frontend = make_frontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
@@ -545,5 +606,6 @@ if __name__ == "__main__":
             close_check="--close" in sys.argv,
             worktree_check="--worktrees" in sys.argv,
             queue_check="--queue" in sys.argv,
+            burst_check="--bursts" in sys.argv,
         )
     )

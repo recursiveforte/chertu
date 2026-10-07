@@ -21,7 +21,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/worktrees [enabled]` | Views/changes the durable per-project default for fresh Git worktrees, shown in the channel topic; defaults to off |
 | `/worktree prompt`, `/no-worktree prompt` | Starts a new session with the project harness, overriding the workspace default once |
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
-| Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree, following its default |
+| Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree; rapid Codex follow-ups from the same author share the first thread |
 | Codex prompt reactions | Native queue: ↪️ waiting, 👀 running, ✅ completed; ❌ failed/interrupted/removed |
 | Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
 | `/codex`, `/claude`, `/astra` | Explicit harness launch in the current project; Astra is a Codex alias |
@@ -79,6 +79,19 @@ setup and from Discord uses one implementation.
 - Dashboard URLs, authenticated local control endpoints, and deployment entrypoints.
 
 ## Verification and limits
+
+Rapid Codex project-channel prompts are grouped per project and author while
+delivery is pending or within five seconds of the previous message. Each prompt
+retains its source-message reactions and enters the same native queue in arrival
+order. Explicit harness launches start separate sessions. Regression tests cover
+overlapping launches, slow audio and attachments, the time window, separate users
+and projects, explicit launches, failed startup/retry, and existing-thread routing.
+These use mocked Discord and Codex calls; production Discord burst delivery has
+not been exercised. `tests/live_codex_activity.py --bursts` additionally checks
+one native conversation and three FIFO completions with an in-memory Discord sink.
+That isolated native check passed on 2026-10-07, including completion reactions
+for all three original project-channel messages. The production daemon and
+existing conversations were untouched.
 
 Per-project worktrees are a fork extension. Regression checks use real temporary
 Git repositories to verify unique branches, concurrent isolation, dirty source
