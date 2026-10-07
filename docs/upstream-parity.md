@@ -100,6 +100,13 @@ and failure handling. These tests do not establish live OpenAI recognition accur
 or end-to-end Discord audio delivery. Production speech recognition requires a
 separately configured `OPENAI_API_KEY`; Codex subscription authentication is not used.
 
+On 2026-10-06, live `gpt-transcribe` recognition succeeded using the configured
+production API key and OpenAI Whisper's public JFK speech fixture, converted to
+Discord-style Ogg/Opus and processed through Chert's decoder and transcription
+client in a temporary checkout. Transcript publication and prompt inclusion were
+also checked with an in-memory Discord sink. The bridge was activated with the
+key; no test audio or prompts were sent to production Discord conversations.
+
 Deployment checks additionally verify the exact revision, gateway connection,
 service stability, HTTP health, command schema, existing Discord resources,
 state mappings, and the unchanged shared Codex daemon. Passing a unit test or
