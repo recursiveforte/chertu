@@ -2,6 +2,23 @@
 
 # chert 🔭 — one Discord frontend, two coding backends
 
+Discord voice messages and audio uploads can be used as prompts in project channels
+or existing session threads. Chert posts the recognized text in the session thread
+before delivering it to the agent, alongside any typed caption and other attachments.
+Transcripts are attributed to the sender, split across Discord messages when needed,
+and cannot trigger mentions or bot commands.
+
+Configure `OPENAI_API_KEY` in the private `.env` and restart the bridge to enable
+speech recognition. The default is OpenAI's high-accuracy
+[`gpt-transcribe`](https://developers.openai.com/api/docs/models/gpt-transcribe);
+`AUDIO_TRANSCRIPTION_MODEL` can override it. API billing is separate from Codex login.
+Recordings are sent to OpenAI for transcription. PyAV (included in requirements)
+decodes Discord Ogg/Opus and common audio formats in a separate worker, with no
+system FFmpeg installation required. Limits are 25 MB and 10 minutes per recording.
+Temporary audio is deleted after processing; transcripts remain in Discord and the
+agent conversation. A failed recording stops the entire message from being delivered
+and produces an error so the sender can retry.
+
 This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream Chert as its source of truth**. One bot and one command registry serve **one channel per project**. Each project binds a directory on the bot host to a Discord channel and has a default harness: Codex or Claude.
 
 Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.

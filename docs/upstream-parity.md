@@ -20,6 +20,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/harness [name]` | Changes the durable default for new sessions; existing threads retain their harness |
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
 | Plain prompts | Opens a message-attached thread in the current project directory |
+| Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
 | `/codex`, `/claude`, `/astra` | Explicit harness launch in the current project; Astra is a Codex alias |
 | `/sessions` | Lists both harnesses for the current project |
 | `/resume`, `/fork` | Native history reuse/copy or cross-harness handoff |
@@ -85,6 +86,13 @@ Claude routing/adoption tests do not establish live Claude inference. S3 tests u
 a fake client and do not establish production bucket access. Backend-specific
 models, permissions, reasoning settings, and terminal menus are not claimed to be
 identical across Codex and Claude.
+
+Audio is a fork extension. Tests exercise real Ogg/Opus decoding, multipart HTTP
+requests against a local test server, transcript publication before prompt delivery,
+new and existing thread routing, mixed attachments, authorization, long transcripts,
+and failure handling. These tests do not establish live OpenAI recognition accuracy
+or end-to-end Discord audio delivery. Production speech recognition requires a
+separately configured `OPENAI_API_KEY`; Codex subscription authentication is not used.
 
 Deployment checks additionally verify the exact revision, gateway connection,
 service stability, HTTP health, command schema, existing Discord resources,

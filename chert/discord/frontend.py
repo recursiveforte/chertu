@@ -14,6 +14,7 @@ from chert.vendor import bridge as upstream
 from chert.paths import runtime_path
 from chert.projects import ProjectStore
 from chert.discord.projects import ProjectCommands
+from chert.discord.audio import AudioMessage, Transcriber, prepare_audio
 from chert.backends.base import Harness
 from chert.backends.codex.backend import CodexBackend
 from chert.backends.claude import ClaudeBackend
@@ -32,6 +33,7 @@ class Frontend(upstream.Bridge):
         self._project_context = ContextVar("chert_project", default=None)
         self.project_lock = asyncio.Lock()
         self.project_channels = {}
+        self.transcriber = Transcriber()
         upstream.CHANNEL_ID = 0
         upstream.PROJECT_ROOT = config.project_root
         super().__init__(intents=self.intents_for_bot())
@@ -307,12 +309,19 @@ class Frontend(upstream.Bridge):
             backend = self.backend_for(message.channel)
             if backend:
                 try:
+                    if not content.startswith("!"):
+                        message = await prepare_audio(message, self.transcriber)
+                        if isinstance(message, AudioMessage):
+                            await message.publish(message.channel)
                     return await self.backends[backend].message(message)
                 except Exception as exc:
                     LOG.exception("Session message handling failed")
                     return await self.say(message.channel, f"Could not deliver: {str(exc)[:1500]}")
 
     async def launch_project_message(self, project, harness, message, prompt):
+        message = await prepare_audio(message, self.transcriber)
+        if isinstance(message, AudioMessage):
+            prompt = "\n\n".join(part for part in (prompt, message.transcript_text) if part)
         attached = await self.save_attachments(message)
         prompt = "\n".join(part for part in (prompt, attached) if part)
         if not prompt:

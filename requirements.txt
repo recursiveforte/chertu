@@ -5,3 +5,4 @@ discord.py==2.7.1
 python-dotenv==1.2.2
 boto3>=1.40
 jsonschema>=4.23,<5
+av==18.1.0
