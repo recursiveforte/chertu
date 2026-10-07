@@ -18,6 +18,7 @@ def thread_title(name, ended=False, *, status="idle", sid="", collides=False):
     state = {"running": "busy"}.get(status, status)
     emoji = {
         **upstream.STATUS_EMOJI,
+        "idle": "💤",
         "error": "❌",
         "interrupted": "⏹",
         "disconnected": "⚪",

@@ -64,6 +64,10 @@ class CodexDiscovery:
                         parent = await self.backend.discovery_channel(info)
                         if parent is None:
                             continue
+                    else:
+                        # A history/attachment error must not prevent an existing
+                        # thread from showing its last known status and name.
+                        await self.backend.events.observe_session(session, info)
                     await self.backend.live.attach(info["id"])
                     if session is None:
                         title = (

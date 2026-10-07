@@ -12,13 +12,13 @@ from chert.backends.codex.presentation import (
 class PresentationTests(unittest.TestCase):
     def test_original_thread_and_speaker_style(self):
         session = Session(42, "/code/celeste", prompt_name("is your src on gh?"))
-        self.assertEqual(thread_title(session.name), "🔥 is-your-src-on-gh")
+        self.assertEqual(thread_title(session.name), "💤 is-your-src-on-gh")
         self.assertEqual(speaker_name(session), "celeste · is-your-src-on-gh")
         self.assertEqual(thread_title(session.name, ended=True), "🌌 is-your-src-on-gh")
 
     def test_thread_status_preserves_name_collision_suffix_and_length_limit(self):
         for status, emoji in {
-            "running": "🔭", "waiting": "📡", "idle": "🔥", "error": "❌",
+            "running": "🔭", "waiting": "📡", "idle": "💤", "error": "❌",
             "interrupted": "⏹", "disconnected": "⚪", "ended": "🌌",
         }.items():
             with self.subTest(status=status):

@@ -166,6 +166,14 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.bot.main_channel.create_thread.assert_awaited_once()
         self.assertEqual(self.store.sessions[20].codex_thread, "external")
 
+    async def test_history_error_does_not_block_existing_thread_title_refresh(self):
+        self.bot.live.attach.side_effect = RpcError("missing source rollout")
+        with self.assertLogs("chert.backends.codex.discovery", level="WARNING"):
+            await self.bot.discover_once()
+        self.frontend.retitle.assert_called_once_with(self.thread, "💤 Existing session")
+        self.assertEqual(self.store.sessions[20].status, "idle")
+        self.bot.main_channel.create_thread.assert_not_called()
+
     async def test_removed_test_session_is_not_rediscovered(self):
         self.store.sessions.clear()
         self.set_up_live()

@@ -283,7 +283,7 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
             {"method": "thread/name/updated", "params": {"threadId": SID, "threadName": "new-name"}}
         )
         self.assertEqual(self.session.name, "new-name")
-        self.host.retitle.assert_called_once_with(self.channel, "🔥 new-name")
+        self.host.retitle.assert_called_once_with(self.channel, "💤 new-name")
 
     def test_upstream_text_aliases_and_fleet_forms(self):
         self.assertEqual(text_arguments("bypass", ""), {"_command": "mode", "mode": "bypass"})

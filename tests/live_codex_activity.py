@@ -312,7 +312,7 @@ async def main(model_check=False, project_check=False):
                         await asyncio.sleep(0.2)
                 await live.notifications.join()
                 assert session.status == "idle", f"Turn did not complete: {session.status}"
-                assert frontend.retitle.call_args.args[1].startswith("🔥 "), "No idle thread title"
+                assert frontend.retitle.call_args.args[1].startswith("💤 "), "No idle thread title"
                 print("Native working → idle thread emoji (in-memory Discord): PASS", flush=True)
                 assert any("CHERT_ACTIVITY_DONE" in m for m in messages), "Final reply missing"
                 assert any("turn done" in m for m in edits), "Completion card missing"

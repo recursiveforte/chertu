@@ -50,9 +50,11 @@ setup and from Discord uses one implementation.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
 - Codex thread prefixes follow activity: 🔭 working/exploring, 📡 waiting for
-  approval/input, 🔥 idle, ⏹ interrupted, ❌ failed, ⚪ disconnected, 🌌 ended.
+  approval/input, 💤 idle, ⏹ interrupted, ❌ failed, ⚪ disconnected, 🌌 ended.
   Names and collision suffixes are preserved. Background renames coalesce to the
   latest state; Discord's per-thread rename rate limits can delay the visible emoji.
+  Existing titles refresh from the last known state even when native history
+  errors prevent attachment; such errors still limit activity reconciliation.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
 - A parameterless `/model` picker; selected model/effort settings persist until

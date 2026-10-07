@@ -40,7 +40,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         self.channel.edit.assert_awaited_with(name="🔭 original")
         await self.event("turn/completed", turn={"id": "one", "status": "completed"})
         await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="🔥 original")
+        self.channel.edit.assert_awaited_with(name="💤 original")
         self.host.say.assert_not_called()
 
     async def test_muting_messages_still_updates_thread_status(self):
@@ -63,14 +63,14 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(editing.wait(), 1)
         # The visible name can already match the final state while an old
         # working rename is in flight; it must still be superseded.
-        self.channel.name = "🔥 original"
+        self.channel.name = "💤 original"
         await asyncio.wait_for(
             self.event("turn/completed", turn={"id": "one", "status": "completed"}), 1
         )
-        self.assertEqual(self.host._titles[300], "🔥 original")
+        self.assertEqual(self.host._titles[300], "💤 original")
         release.set()
         await asyncio.gather(*self.host._title_tasks)
-        self.assertEqual(self.channel.name, "🔥 original")
+        self.assertEqual(self.channel.name, "💤 original")
 
     async def test_discovery_retries_failed_rename_with_cached_desired_title(self):
         self.channel.name = "🚀 original"
