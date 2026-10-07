@@ -17,7 +17,19 @@ Deploy Chert to the existing **lemma** VM on **spoon**. The old VM named
 - Production branch: `main`. Read the deployed commit with `git rev-parse HEAD`;
   do not assume the deployed revision matches the local checkout or GitHub.
 
-Run commands inside lemma through spoon:
+When the agent is running on `lemma`, `/home/cheru/chert` is the production
+checkout, not a separate development clone. Check `hostname` and
+`git rev-parse --show-toplevel` before making changes. Run Linux commands
+directly on `lemma`; SSH through `spoon` is unnecessary from this environment.
+Edits and pulls in this checkout affect production files. Prepare and test
+runtime changes in a separate checkout before updating production.
+
+The agent sandbox may make `.git` read-only or block access to the systemd bus.
+Use the available command escalation mechanism for authorized Git writes and
+service management when needed; these restrictions do not mean the agent is
+running on a different host.
+
+When working from outside `lemma`, run commands inside it through `spoon`:
 
 ```bash
 ssh cheru@spoon '/usr/local/bin/orb -m lemma -w /home/cheru/chert bash -s' <<'SH'
