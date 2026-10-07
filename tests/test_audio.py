@@ -53,7 +53,7 @@ class AudioRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_voice_reply_is_published_before_prompt_and_never_a_command(self):
         self.bot.transcriber.transcribe.return_value = "!kill @everyone"
 
-        async def submit(channel, text):
+        async def submit(channel, text, *, source=None):
             self.assertEqual(self.thread.send.await_count, 2)
             self.assertEqual(text, "[Voice transcript 1]\n!kill @everyone")
             return "👀"

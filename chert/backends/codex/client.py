@@ -218,12 +218,12 @@ class LiveCodex:
         )
         return next((t["id"] for t in result["data"] if t["status"] == "inProgress"), None)
 
-    async def submit(self, session, prompt):
+    async def submit(self, session, prompt, *, queue=False, client_id=None):
         await self.connect()
         await self.attach(session.codex_thread)
         inputs = [{"type": "text", "text": prompt}]
         turn_id = await self.active_turn(session.codex_thread)
-        if turn_id:
+        if turn_id and not queue:
             await self.call(
                 "turn/steer",
                 {"threadId": session.codex_thread, "expectedTurnId": turn_id, "input": inputs},
@@ -259,9 +259,28 @@ class LiveCodex:
                     "developer_instructions": None,
                 },
             }
-        result = await self.call("turn/start", params)
+        if queue:
+            # The native queue starts idle threads and drains busy ones itself.
+            # Using it for both avoids turn/start steering a concurrently started turn.
+            settings = {k: v for k, v in params.items() if k != "input"}
+            if len(settings) > 1:
+                await self.call("thread/settings/update", settings)
+            result = await self.call(
+                "thread/queue/add",
+                {
+                    "threadId": session.codex_thread,
+                    "input": inputs,
+                    "clientUserMessageId": client_id or str(uuid.uuid4()),
+                },
+            )
+            accepted = bool(result.get("queuedSubmission", {}).get("id"))
+            if not accepted:
+                raise RpcError("Codex did not acknowledge the queued submission.")
+        else:
+            result = await self.call("turn/start", params)
+            accepted = bool(result.get("turn", {}).get("id"))
         turn = result.get("turn") or {}
-        if turn.get("id") and turn.get("status") != "failed":
+        if accepted and turn.get("status") != "failed":
             # Clear only the settings actually accepted; a newer slash command
             # may have queued another choice while this RPC was in flight.
             if pending_model is not None:
@@ -282,6 +301,27 @@ class LiveCodex:
             # The runtime status in thread/read can lag this response. Track the
             # accepted turn immediately so a fast follow-up steers that exact turn.
             self.active_turns[session.codex_thread] = turn["id"]
+        if queue:
+            cursor = None
+            while True:
+                try:
+                    page = await self.call(
+                        "thread/queue/list",
+                        {
+                            "threadId": session.codex_thread,
+                            "cursor": cursor,
+                            "limit": 100,
+                        },
+                    )
+                except (RpcError, OSError, asyncio.TimeoutError):
+                    # Submission already succeeded. Its userMessage event/history
+                    # will establish the reaction if this optional read fails.
+                    return "queued"
+                if any(row["id"] == result["queuedSubmission"]["id"] for row in page["data"]):
+                    return "queued"
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    return "started"
         return "started"
 
     async def interrupt(self, thread_id):

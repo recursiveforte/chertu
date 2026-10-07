@@ -203,7 +203,7 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.message(message)
         self.host.save_attachments.assert_awaited_once_with(message)
         self.adapter.send_prompt.assert_awaited_once_with(
-            self.channel, "look\n[attachment: /uploads/image.png]"
+            self.channel, "look\n[attachment: /uploads/image.png]", source=message
         )
 
     async def test_approval_is_sent_only_after_explicit_click(self):

@@ -139,6 +139,14 @@ class CodexEvents:
         if session and session.status == "ended":
             return
         if session:
+            if event["method"] in {"turn/started", "turn/completed"}:
+                self.backend.reactions.observe_turn(session, params["turn"])
+                await self.backend.reactions.sync(session)
+            if event["method"] in {"item/started", "item/completed"}:
+                self.backend.reactions.observe_item(
+                    session, params.get("turnId"), params.get("item") or {}
+                )
+                await self.backend.reactions.sync(session)
             if event["method"] == "thread/name/updated":
                 name = params.get("threadName") or params.get("name")
                 if name:
@@ -674,6 +682,8 @@ class CodexEvents:
                     if reached_checkpoint or not cursor:
                         break
                 for turn in reversed(pending):
+                    self.backend.reactions.observe_turn(session, turn)
+                    await self.backend.reactions.sync(session)
                     for item in turn.get("items", []):
                         if item.get("type") == "agentMessage":
                             await self._handle_live_event(

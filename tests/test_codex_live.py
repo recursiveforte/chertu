@@ -122,6 +122,84 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
         await self.client.interrupt("first")
         self.assertEqual(self.calls[-1]["params"], {"threadId": "first", "turnId": "turn-123"})
 
+    async def test_native_queue_owns_busy_and_idle_prompt_dispatch(self):
+        session = Session(1, "/project", "test", "first", native_settings=True)
+        self.client.attach = AsyncMock()
+        for busy in (None, "turn-123"):
+            with self.subTest(busy=busy):
+                self.client.active_turn = AsyncMock(return_value=busy)
+
+                async def call(method, params):
+                    if method == "thread/queue/add":
+                        return {"queuedSubmission": {"id": "queued-id"}}
+                    if method == "thread/queue/list":
+                        return {"data": [{"id": "queued-id"}] if busy else []}
+                    self.fail(f"Unexpected native operation: {method}")
+
+                self.client.call = AsyncMock(side_effect=call)
+                result = await self.client.submit(
+                    session, "later", queue=True, client_id="chert:123"
+                )
+                self.assertEqual(result, "queued" if busy else "started")
+                self.client.call.assert_any_await(
+                    "thread/queue/add",
+                    {
+                        "threadId": "first",
+                        "input": [{"type": "text", "text": "later"}],
+                        "clientUserMessageId": "chert:123",
+                    },
+                )
+
+    async def test_native_queue_applies_settings_for_subsequent_turns(self):
+        session = Session(
+            1,
+            "/project",
+            "test",
+            "first",
+            native_settings=True,
+            pending_settings={"model": "chosen", "config": {"model_reasoning_effort": "high"}},
+        )
+        self.client.attach = AsyncMock()
+        self.client.active_turn = AsyncMock(return_value="busy")
+
+        async def call(method, params):
+            if method == "thread/queue/add":
+                return {"queuedSubmission": {"id": "queued-id"}}
+            if method == "thread/queue/list":
+                return {"data": [{"id": "queued-id"}]}
+            return {}
+
+        self.client.call = AsyncMock(side_effect=call)
+        await self.client.submit(session, "later", queue=True)
+        self.client.call.assert_any_await(
+            "thread/settings/update",
+            {
+                "threadId": "first",
+                "model": "chosen",
+                "effort": "high",
+            },
+        )
+        self.assertEqual(session.pending_settings, {})
+
+    async def test_accepted_queue_read_failure_does_not_resubmit_or_report_rejection(self):
+        self.client.attach = AsyncMock()
+        self.client.active_turn = AsyncMock(return_value="busy")
+        self.client.call = AsyncMock(
+            side_effect=[
+                {"queuedSubmission": {"id": "queued-id"}},
+                RpcError("temporary read failure"),
+            ]
+        )
+        self.assertEqual(
+            await self.client.submit(
+                Session(1, "/project", "test", "first"),
+                "later",
+                queue=True,
+            ),
+            "queued",
+        )
+        self.assertEqual(self.client.call.await_count, 2)
+
     async def test_explicit_native_model_and_effort_are_applied_once_on_next_turn(self):
         session = Session(
             1,

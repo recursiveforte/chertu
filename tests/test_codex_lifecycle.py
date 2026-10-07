@@ -65,7 +65,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             call=AsyncMock(side_effect=call),
             attach=AsyncMock(),
             close=AsyncMock(),
-            submit=AsyncMock(return_value="steered"),
+            submit=AsyncMock(return_value="queued"),
             interrupt=AsyncMock(),
             active_turn=AsyncMock(return_value=None),
             active_turns={},

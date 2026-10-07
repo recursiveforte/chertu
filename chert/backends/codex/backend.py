@@ -18,6 +18,7 @@ from chert.backends.codex.events import CodexEvents
 from chert.backends.codex.controls import CodexControls, text_arguments
 from chert.backends.codex.discovery import CodexDiscovery
 from chert.backends.codex.client import RpcError
+from chert.backends.codex.reactions import PromptReactions
 from chert.backends.codex.presentation import prompt_name, speaker_name, thread_title
 
 LOG = logging.getLogger(__name__)
@@ -46,7 +47,10 @@ class CodexBackend:
 
         async def respond(text):
             await interaction.followup.send(
-                text, allowed_mentions=upstream.NO_PING, suppress_embeds=True, ephemeral=name == "kill"
+                text,
+                allowed_mentions=upstream.NO_PING,
+                suppress_embeds=True,
+                ephemeral=name == "kill",
             )
 
         return await self.controls.execute(
@@ -87,6 +91,7 @@ class CodexBackend:
         )
         self.background_tasks = []
         self.events = CodexEvents(self)
+        self.reactions = PromptReactions(self)
         self.controls = CodexControls(self)
         self.discovery = CodexDiscovery(self)
         self.terminal = CodexTerminal(options.binary, self.live.socket)
@@ -226,7 +231,6 @@ class CodexBackend:
             raise ValueError("The session directory belongs to a different project channel.")
         title = prompt_name(prompt) if prompt else info.get("name") or f"codex-{info['id'][:8]}"
         if source_message:
-            await source_message.add_reaction("🚀")
             thread = await source_message.create_thread(
                 name=thread_title(title), auto_archive_duration=10080
             )
@@ -262,35 +266,48 @@ class CodexBackend:
         session.status_message, session.status_webhook = card.id, True
         self.store.save()
         if prompt:
-            await self.send_prompt(thread, prompt)
-            if source_message:
-                await source_message.add_reaction("📡")
-            else:
+            await self.send_prompt(thread, prompt, source=source_message)
+            if source_message is None:
                 await self.say(thread, f"-# 🧑 {prompt}")
         return thread
 
-    async def send_prompt(self, thread, prompt):
+    async def send_prompt(self, thread, prompt, *, source=None):
         session = self.store.sessions[thread.id]
         if session.status == "ended":
             raise ValueError("This session ended. Use /revive or /resume first.")
         if thread.id in self.stopping:
             raise ValueError("This session is stopping; try again once it stops.")
         await self.ensure_live(session)
-        result = "↪️" if await self.live.submit(session, prompt) == "steered" else "👀"
-        session.status = "running"
-        self.store.save()
-        turn_id = getattr(self.live, "active_turns", {}).get(session.codex_thread)
-        if turn_id:
-            async with self.events.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
-                if turn_id not in getattr(self.live, "completed_turns", set()):
-                    self.events.begin_activity(session, turn_id)
-                    await self.events.update_live_status(session)
-        if result == "👀":
-            # Native turn settings persist in the daemon. Don't overwrite a later
-            # change made from the user's terminal/editor on every Discord reply.
+        async with self.events.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+            if session.status == "ended" or thread.id in self.stopping:
+                raise ValueError("This session is stopping or ended.")
+            client_id = f"chert:{source.id}" if source else str(uuid.uuid4())
+            entry = self.reactions.track(session, source, client_id) if source else None
+            try:
+                result = (
+                    "↪️"
+                    if await self.live.submit(session, prompt, queue=True, client_id=client_id)
+                    == "queued"
+                    else "👀"
+                )
+            except RpcError:
+                if entry:
+                    entry["emoji"] = "❌"
+                    await self.reactions.sync(session)
+                raise
+            # On transport errors retain the identity for history reconciliation;
+            # never retry a possibly accepted prompt.
+            if entry:
+                entry["emoji"] = result
+                await self.reactions.sync(session)
+            session.status = "running"
             session.service_tier = None
             session.collaboration_mode = None
             self.store.save()
+            turn_id = getattr(self.live, "active_turns", {}).get(session.codex_thread)
+            if turn_id and turn_id not in getattr(self.live, "completed_turns", set()):
+                self.events.begin_activity(session, turn_id)
+                await self.events.update_live_status(session)
         return result
 
     async def save_attachments(self, message):
@@ -320,8 +337,7 @@ class CodexBackend:
             if content:
                 if message.author.id != self.owner:
                     content = f"{message.author.display_name}: {content}"
-                reaction = await self.send_prompt(message.channel, content)
-                await message.add_reaction(reaction)
+                await self.send_prompt(message.channel, content, source=message)
 
     async def ensure_live(self, session):
         await self.live.connect()
@@ -406,7 +422,9 @@ class CodexBackend:
             try:
                 await asyncio.wait_for(operation(), timeout=20)
             except (RpcError, OSError, asyncio.TimeoutError, ValueError) as exc:
-                LOG.warning("Could not %s for closed session %s: %s", label, session.codex_thread, exc)
+                LOG.warning(
+                    "Could not %s for closed session %s: %s", label, session.codex_thread, exc
+                )
                 failures.append(label)
 
         await cleanup("close the terminal", lambda: self.terminal.close(session))
@@ -444,6 +462,7 @@ class CodexBackend:
         while not self.is_closed():
             try:
                 for session in list(self.store.sessions.values()):
+                    await self.reactions.reconcile(session)
                     if (
                         session.status == "ended"
                         and session.ended_at

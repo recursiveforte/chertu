@@ -22,6 +22,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/worktree prompt`, `/no-worktree prompt` | Starts a new session with the project harness, overriding the workspace default once |
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
 | Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree, following its default |
+| Codex prompt reactions | Native queue: ↪️ waiting, 👀 running, ✅ completed; ❌ failed/interrupted/removed |
 | Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
 | `/codex`, `/claude`, `/astra` | Explicit harness launch in the current project; Astra is a Codex alias |
 | `/sessions` | Lists both harnesses for the current project |
@@ -63,7 +64,14 @@ setup and from Discord uses one implementation.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
 - A parameterless `/model` picker; selected model/effort settings persist until
-  the next accepted turn. Steering active work does not consume pending settings.
+  the next accepted prompt. Queued prompts apply pending settings through native
+  `thread/settings/update`, without modifying the active turn.
+- Discord Codex prompts use `thread/queue/add` for both idle and busy sessions.
+  Codex owns storage, ordering, and automatic dispatch; Chert stores only Discord
+  message/client IDs and reaction state. Native user-message events link dequeued
+  prompts to turns, and native history repairs missed reaction updates after restart.
+  Only the bot's lifecycle reactions are replaced. Failed/interrupted turns and
+  removed queue entries never receive a success checkmark.
 - Native terminal clients attach to the same Codex actor instead of creating a
   second conversation.
 - Existing state schemas, native conversation identities, atomic writes, and
@@ -121,6 +129,12 @@ native actor unloaded and the Discord archive payload was verified. It does not
 establish live closure of a production Discord thread.
 On 2026-10-07, the extended check also passed repeated activity/discovery ticks
 after closure without accessing the Discord channel again (in-memory sink).
+On 2026-10-07, `--queue` passed against the installed 0.161.0 daemon binary in an
+isolated app-server: two follow-ups appeared in Codex's native queue, then ran as
+separate turns in FIFO order after the initial turn. All three prompts reached ✅,
+queued prompts transitioned ↪️ → 👀 → ✅, and a reconstructed bridge state recovered
+completion from native history without resubmitting. Discord reaction calls used
+an in-memory sink; this does not establish end-to-end production Discord delivery.
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use

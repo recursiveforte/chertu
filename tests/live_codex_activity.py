@@ -6,6 +6,7 @@ Use --projects to check project launches, routing, and harness changes with a re
 isolated Codex runtime and in-memory Discord channels.
 Use --close to verify native closure without resuming history.
 Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
+Use --queue to verify native queuing and Discord prompt reactions.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -113,8 +114,104 @@ async def check_close(frontend, session, channel, consumer):
     channel.edit.assert_awaited_once_with(archived=True)
     adapter.live_channel.assert_not_called()
     assert session.status == "ended"
-    print("Native close without history attachment; Discord archive payload (in-memory): PASS", flush=True)
-    print("Closed session stays archived across activity and discovery ticks (in-memory): PASS", flush=True)
+    print(
+        "Native close without history attachment; Discord archive payload (in-memory): PASS",
+        flush=True,
+    )
+    print(
+        "Closed session stays archived across activity and discovery ticks (in-memory): PASS",
+        flush=True,
+    )
+
+
+async def check_queue(frontend, session, channel, consumer):
+    adapter = frontend.codex
+    frontend._connection.user = SimpleNamespace(id=999)
+    sources, transitions, visible = {}, {}, {}
+    for ident in (501, 502, 503):
+        transitions[ident], visible[ident] = [], set()
+
+        async def add(emoji, ident=ident):
+            transitions[ident].append(emoji)
+            visible[ident].add(emoji)
+
+        async def remove(emoji, user, ident=ident):
+            assert user.id == 999
+            visible[ident].discard(emoji)
+
+        sources[ident] = SimpleNamespace(
+            id=ident, channel=channel, add_reaction=add, remove_reaction=remove
+        )
+    await adapter.send_prompt(
+        channel,
+        "Run a shell command that sleeps 8 seconds, then reply exactly QUEUE_FIRST_DONE.",
+        source=sources[501],
+    )
+    async with asyncio.timeout(30):
+        while "👀" not in visible[501]:
+            if consumer.done():
+                await consumer
+            await asyncio.sleep(0.1)
+    for ident in (502, 503):
+        await adapter.send_prompt(
+            channel, f"Reply exactly QUEUE_{ident}_DONE. Do not use tools.", source=sources[ident]
+        )
+        assert visible[ident] == {"↪️"}, visible
+    queue = await adapter.live.call("thread/queue/list", {"threadId": session.codex_thread})
+    assert [q["clientUserMessageId"] for q in queue["data"]] == ["chert:502", "chert:503"]
+    print("Follow-ups present in the native Codex queue: PASS", flush=True)
+    async with asyncio.timeout(180):
+        while session.prompt_messages:
+            if consumer.done():
+                await consumer
+            await asyncio.sleep(0.1)
+    await adapter.live.notifications.join()
+    for ident in (501, 502, 503):
+        assert visible[ident] == {"✅"}, (ident, transitions)
+        assert transitions[ident][-2:] == ["👀", "✅"], transitions
+    page = await adapter.live.call(
+        "thread/turns/list",
+        {
+            "threadId": session.codex_thread,
+            "limit": 10,
+            "itemsView": "summary",
+            "sortDirection": "asc",
+        },
+    )
+    turns = page["data"]
+    assert len(turns) == 3 and all(t["status"] == "completed" for t in turns), turns
+    ids = [[i.get("clientId") for i in t["items"] if i["type"] == "userMessage"] for t in turns]
+    assert ids == [["chert:501"], ["chert:502"], ["chert:503"]], ids
+    print(
+        "Three separate completed turns in FIFO order; ↪️ → 👀 → ✅ (in-memory Discord): PASS",
+        flush=True,
+    )
+
+    # Reconstruct the reaction state as if the bridge had missed every event.
+    from chert.backends.codex.reactions import PromptReactions
+
+    session.prompt_messages = [
+        {
+            "client_id": "chert:503",
+            "message": 503,
+            "channel": channel.id,
+            "emoji": "↪️",
+            "applied": "↪️",
+            "created": time.time() - 180,
+        }
+    ]
+    adapter.store.save()
+    adapter.store = SessionStore(adapter.store.path)
+    adapter.reactions = PromptReactions(adapter)
+    adapter.get_channel = lambda _: channel
+    channel.get_partial_message = lambda ident: sources[ident]
+    await adapter.reactions.reconcile(adapter.store.sessions[channel.id])
+    assert not adapter.store.sessions[channel.id].prompt_messages
+    assert transitions[503][-1] == "✅"
+    print(
+        "Restart reconciliation from native history/client ID, without resubmission: PASS",
+        flush=True,
+    )
 
 
 async def check_projects(root, config, consumer_factory, worktrees=False):
@@ -139,6 +236,7 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
         webhook_id=None,
         attachments=[],
         add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
         create_thread=AsyncMock(return_value=thread),
     )
     frontend.project_channels[100] = parent
@@ -202,12 +300,14 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
         assert frontend.backend_for(thread) == "codex"
         assert ProjectStore(projects.path).projects["work"].harness == "claude"
         reply = SimpleNamespace(
+            id=301,
             channel=thread,
             author=source.author,
             webhook_id=None,
             attachments=[],
             content="Reply exactly CHERT_EXISTING_CODEX_OK. Do not use tools.",
             add_reaction=AsyncMock(),
+            remove_reaction=AsyncMock(),
         )
         await frontend.on_message(reply)
         await completed()
@@ -224,13 +324,17 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
             for name, enabled, identifier in (("no-worktree", True, 301), ("worktree", False, 302)):
                 await frontend.project_commands.set_worktrees(project, enabled)
                 thread = SimpleNamespace(
-                    id=identifier, parent_id=100, parent=parent, archived=False,
+                    id=identifier,
+                    parent_id=100,
+                    parent=parent,
+                    archived=False,
                     mention=f"<#{identifier}>",
                 )
                 parent.create_thread = AsyncMock(return_value=thread)
                 adapter.live_channel = AsyncMock(return_value=thread)
                 interaction = SimpleNamespace(
-                    channel=parent, user=source.author,
+                    channel=parent,
+                    user=source.author,
                     response=SimpleNamespace(defer=AsyncMock()),
                     followup=SimpleNamespace(send=AsyncMock()),
                 )
@@ -239,22 +343,33 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
                 )
                 session = adapter.store.sessions[identifier]
                 await completed()
-                native = (await adapter.live.call(
-                    "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
-                ))["thread"]
+                native = (
+                    await adapter.live.call(
+                        "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
+                    )
+                )["thread"]
                 assert (Path(native["cwd"]) == config.project_root) == (name == "no-worktree")
                 assert native["cwd"] == session.cwd
                 assert projects.for_directory(session.cwd) is project
                 assert project.worktrees == enabled
                 assert adapter.store.sessions[300].cwd == original_cwd
-                print(f"/{name} override → correct native cwd and completed inference: PASS", flush=True)
+                print(
+                    f"/{name} override → correct native cwd and completed inference: PASS",
+                    flush=True,
+                )
     finally:
         consumer.cancel()
         await asyncio.gather(consumer, return_exceptions=True)
         await frontend.close()
 
 
-async def main(model_check=False, project_check=False, close_check=False, worktree_check=False):
+async def main(
+    model_check=False,
+    project_check=False,
+    close_check=False,
+    worktree_check=False,
+    queue_check=False,
+):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     with tempfile.TemporaryDirectory(prefix="chert-qa-", dir="/tmp") as temporary:
@@ -319,7 +434,7 @@ async def main(model_check=False, project_check=False, close_check=False, worktr
                     "cwd": str(project),
                     "approvalPolicy": "on-request",
                     "sandbox": "workspace-write",
-                    "ephemeral": not (model_check or close_check),
+                    "ephemeral": not (model_check or close_check or queue_check),
                 },
             )
             sid = response["thread"]["id"]
@@ -367,6 +482,9 @@ async def main(model_check=False, project_check=False, close_check=False, worktr
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if queue_check:
+                    await check_queue(frontend, session, channel, consumer)
+                    return
                 if close_check:
                     await check_close(frontend, session, channel, consumer)
                     return
@@ -420,9 +538,12 @@ async def main(model_check=False, project_check=False, close_check=False, worktr
 
 
 if __name__ == "__main__":
-    asyncio.run(main(
-        model_check="--model" in sys.argv,
-        project_check="--projects" in sys.argv,
-        close_check="--close" in sys.argv,
-        worktree_check="--worktrees" in sys.argv,
-    ))
+    asyncio.run(
+        main(
+            model_check="--model" in sys.argv,
+            project_check="--projects" in sys.argv,
+            close_check="--close" in sys.argv,
+            worktree_check="--worktrees" in sys.argv,
+            queue_check="--queue" in sys.argv,
+        )
+    )

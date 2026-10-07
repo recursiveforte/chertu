@@ -44,6 +44,7 @@ class Session:
     delivery_failed: bool = False
     thread_title_cache: str = ""
     ended_at: float = 0
+    prompt_messages: list[dict] = field(default_factory=list)
 
 
 class SessionStore:
