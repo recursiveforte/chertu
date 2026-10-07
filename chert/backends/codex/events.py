@@ -398,7 +398,6 @@ class CodexEvents:
         self.backend.store.save()
 
     async def update_live_status(self, session):
-        await self.update_thread_title(session)
         if session.muted:
             return
         from chert.backends.codex.presentation import activity_text
@@ -549,9 +548,7 @@ class CodexEvents:
         # Codex IDs are UUIDv7, so their leading digits are a shared timestamp.
         # Use the entropy-bearing tail when upstream's renderer needs a short suffix.
         short_id = (session.codex_thread or "")[-4:]
-        title = thread_title(
-            session.name, status=session.status, sid=short_id, collides=collision
-        )
+        title = thread_title(session.name, sid=short_id, collides=collision)
         channel = await self.backend.live_channel(session)
         frontend = self.backend.frontend
         pending = session.discord_thread in frontend._retitling

@@ -13,17 +13,9 @@ def prompt_name(prompt):
     return upstream.slug(prompt)
 
 
-def thread_title(name, ended=False, *, status="idle", sid="", collides=False):
+def thread_title(name, ended=False, *, sid="", collides=False):
     title = upstream.thread_title(name, sid, collides)
-    state = {"running": "busy"}.get(status, status)
-    emoji = {
-        **upstream.STATUS_EMOJI,
-        "idle": "💤",
-        "error": "❌",
-        "interrupted": "⏹",
-        "disconnected": "⚪",
-    }.get("ended" if ended else state, "⚪")
-    return (emoji + title[len(upstream.LIVE_PREFIX):])[:100]
+    return upstream.ended_title(title) if ended else title
 
 
 def speaker_name(session):

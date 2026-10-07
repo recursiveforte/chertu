@@ -49,12 +49,10 @@ setup and from Discord uses one implementation.
   webhook payload; they do not send test messages to production Discord.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
-- Codex thread prefixes follow activity: 🔭 working/exploring, 📡 waiting for
-  approval/input, 💤 idle, ⏹ interrupted, ❌ failed, ⚪ disconnected, 🌌 ended.
-  Names and collision suffixes are preserved. Background renames coalesce to the
-  latest state; Discord's per-thread rename rate limits can delay the visible emoji.
-  Existing titles refresh from the last known state even when native history
-  errors prevent attachment; such errors still limit activity reconciliation.
+- Codex thread titles keep the fixed 🚀 prefix; activity changes appear in the
+  activity card without renaming the thread. Explicit session names and collision
+  suffixes still synchronize, and closing a session uses 🌌. Discovery restores
+  earlier activity-based prefixes to 🚀, subject to Discord's rename rate limits.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
 - A parameterless `/model` picker; selected model/effort settings persist until
@@ -72,8 +70,9 @@ project routing, command schema, permissions, persistence, channel creation,
 archiving, per-thread harness ownership, discovery, recovery, activity rendering,
 model choices, approval/input controls, dashboard routes/assets, backup paths,
 and HTTP authorization. Upstream contract tests detect changes to audited source.
-Thread emoji tests cover lifecycle transitions, muted sessions, failed rename
-recovery, and completion/ending while an older rename is blocked.
+Thread title tests verify that activity transitions do not trigger renames,
+legacy prefixes are restored, failed renames retry, and closing supersedes
+a pending name update.
 `/close` tests exercise authorization, backend routing (including disabled Claude),
 archived projects, and ending only the selected Codex session while archiving its
 Discord thread and preserving its mapping. Codex closure archives Discord before
@@ -93,8 +92,6 @@ The `--close` check exercises native archiving without attaching history, with a
 in-memory Discord archive call. This check passed on 2026-10-06: the isolated
 native actor unloaded and the Discord archive payload was verified. It does not
 establish live closure of a production Discord thread.
-The activity check also asserts working and idle thread titles against the
-in-memory Discord sink; it does not establish real Discord rename latency.
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use

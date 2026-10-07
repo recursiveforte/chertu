@@ -66,7 +66,7 @@ class CodexDiscovery:
                             continue
                     else:
                         # A history/attachment error must not prevent an existing
-                        # thread from showing its last known status and name.
+                        # thread from refreshing its name.
                         await self.backend.events.observe_session(session, info)
                     await self.backend.live.attach(info["id"])
                     if session is None:
@@ -77,7 +77,7 @@ class CodexDiscovery:
                             or "Codex"
                         )
                         thread = await parent.create_thread(
-                            name=thread_title(title, status=live_status(info)),
+                            name=thread_title(title),
                             type=discord.ChannelType.public_thread,
                             auto_archive_duration=1440,
                         )
@@ -135,6 +135,7 @@ class CodexDiscovery:
                 and session.status != "ended"
                 and session.codex_thread not in loaded_ids
             ):
+                await self.backend.events.update_thread_title(session)
                 if session.status != "disconnected":
                     session.status = "disconnected"
                     self.backend.store.save()

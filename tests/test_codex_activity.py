@@ -24,79 +24,47 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
             "turn/started", turn={"id": turn, "status": "inProgress", "startedAt": time.time() - 30}
         )
 
-    async def test_thread_emoji_tracks_lifecycle_without_rename_notices(self):
-        self.host.say = AsyncMock()
+    async def test_activity_changes_do_not_rename_the_thread(self):
+        self.channel.name = "🚀 original"
+        self.session.thread_title_cache = self.channel.name
         await self.start()
-        await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="🔭 original")
         await self.event(
             "thread/status/changed",
             status={"type": "active", "activeFlags": ["waitingOnUserInput"]},
         )
-        await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="📡 original")
         await self.event("thread/status/changed", status={"type": "active"})
-        await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="🔭 original")
         await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        await self.adapter.events.handle_live_event({"method": "chert/disconnected", "params": {}})
+        await self.adapter.events.observe_session(self.session, {})
         await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="💤 original")
-        self.host.say.assert_not_called()
-
-    async def test_muting_messages_still_updates_thread_status(self):
-        self.session.muted = True
-        await self.start()
-        await asyncio.sleep(0)
-        self.channel.edit.assert_awaited_with(name="🔭 original")
-        self.adapter.say.assert_not_called()
-
-    async def test_rate_limited_rename_does_not_block_events_and_latest_title_wins(self):
-        editing, release = asyncio.Event(), asyncio.Event()
-
-        async def edit(**kwargs):
-            editing.set()
-            await release.wait()
-            if "name" in kwargs:
-                self.channel.name = kwargs["name"]
-
-        self.channel.edit.side_effect = edit
-        await self.start()
-        await asyncio.wait_for(editing.wait(), 1)
-        # The visible name can already match the final state while an old
-        # working rename is in flight; it must still be superseded.
-        self.channel.name = "💤 original"
-        await asyncio.wait_for(
-            self.event("turn/completed", turn={"id": "one", "status": "completed"}), 1
-        )
-        self.assertEqual(self.host._titles[300], "💤 original")
-        release.set()
-        await asyncio.gather(*self.host._title_tasks)
-        self.assertEqual(self.channel.name, "💤 original")
+        self.channel.edit.assert_not_called()
+        self.assertEqual(self.session.thread_title_cache, "🚀 original")
+        self.assertTrue(self.adapter.say.called)
 
     async def test_discovery_retries_failed_rename_with_cached_desired_title(self):
-        self.channel.name = "🚀 original"
+        self.channel.name = "💤 original"
         self.channel.edit.side_effect = discord.HTTPException(
             SimpleNamespace(status=503, reason="Unavailable"), "Temporary outage"
         )
-        await self.start()
+        await self.adapter.events.observe_session(self.session, {})
         await asyncio.gather(*self.host._title_tasks)
         self.channel.edit.side_effect = None
         await self.adapter.events.observe_session(self.session, {})
         await asyncio.gather(*self.host._title_tasks)
         self.assertEqual(self.channel.edit.await_count, 2)
-        self.channel.edit.assert_awaited_with(name="🔭 original")
+        self.channel.edit.assert_awaited_with(name="🚀 original")
 
-    async def test_ending_session_supersedes_pending_working_rename(self):
+    async def test_ending_session_supersedes_pending_name_rename(self):
         release = asyncio.Event()
 
         async def edit(**kwargs):
-            if kwargs.get("name") == "🔭 original":
+            if kwargs.get("name") == "🚀 original":
                 await release.wait()
             if "name" in kwargs:
                 self.channel.name = kwargs["name"]
 
         self.channel.edit.side_effect = edit
-        await self.start()
+        await self.adapter.events.observe_session(self.session, {})
         await asyncio.sleep(0)
         await asyncio.wait_for(self.adapter.stop(self.channel, end=True), 1)
         self.channel.edit.assert_any_await(archived=True)

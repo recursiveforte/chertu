@@ -170,7 +170,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.bot.live.attach.side_effect = RpcError("missing source rollout")
         with self.assertLogs("chert.backends.codex.discovery", level="WARNING"):
             await self.bot.discover_once()
-        self.frontend.retitle.assert_called_once_with(self.thread, "💤 Existing session")
+        self.frontend.retitle.assert_called_once_with(self.thread, "🚀 Existing session")
         self.assertEqual(self.store.sessions[20].status, "idle")
         self.bot.main_channel.create_thread.assert_not_called()
 
