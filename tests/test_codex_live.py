@@ -112,6 +112,99 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_promote_claims_exact_queue_entry_before_steering_with_native_input(self):
+        queued = {
+            "id": "q2",
+            "clientUserMessageId": "chert:123",
+            "input": [
+                {"type": "text", "text": "follow-up"},
+                {"type": "localImage", "path": "/tmp/picture.png"},
+            ],
+        }
+        self.client.active_turn = AsyncMock(return_value="active")
+        self.client.call = AsyncMock(
+            side_effect=[
+                {"data": [], "nextCursor": "second"},
+                {"data": [queued]},
+                {"deleted": True},
+                {"turnId": "active"},
+            ]
+        )
+        self.assertEqual(
+            await self.client.promote_queued("first", "chert:123"),
+            {
+                "id": "active",
+                "status": "inProgress",
+            },
+        )
+        calls = self.client.call.await_args_list
+        self.assertEqual(
+            [c.args[0] for c in calls],
+            [
+                "thread/queue/list",
+                "thread/queue/list",
+                "thread/queue/delete",
+                "turn/steer",
+            ],
+        )
+        self.assertEqual(calls[2].args[1], {"threadId": "first", "queuedSubmissionId": "q2"})
+        self.assertEqual(
+            calls[3].args[1],
+            {
+                "threadId": "first",
+                "clientUserMessageId": "chert:123",
+                "expectedTurnId": "active",
+                "input": queued["input"],
+            },
+        )
+
+    async def test_promote_does_not_replay_missing_or_concurrently_consumed_entry(self):
+        self.client.active_turn = AsyncMock(return_value="active")
+        for pages in (
+            [{"data": []}],
+            [
+                {"data": [{"id": "q", "clientUserMessageId": "client", "input": []}]},
+                {"deleted": False},
+            ],
+        ):
+            self.client.call = AsyncMock(side_effect=pages)
+            self.assertIsNone(await self.client.promote_queued("first", "client"))
+            self.assertNotIn("turn/steer", [c.args[0] for c in self.client.call.await_args_list])
+
+    async def test_promote_idle_thread_uses_atomic_native_queue_start(self):
+        self.client.active_turn = AsyncMock(return_value=None)
+        self.client.call = AsyncMock(
+            side_effect=[
+                {"data": [{"id": "q", "clientUserMessageId": "client", "input": []}]},
+                {"turn": {"id": "new", "status": "inProgress"}},
+            ]
+        )
+        self.assertEqual((await self.client.promote_queued("first", "client"))["id"], "new")
+        self.client.call.assert_awaited_with(
+            "thread/queue/start",
+            {
+                "threadId": "first",
+                "queuedSubmissionId": "q",
+            },
+        )
+
+    async def test_rejected_promotion_returns_to_native_queue_but_timeout_never_replays(self):
+        self.client.active_turn = AsyncMock(return_value="active")
+        for failure in (RpcError("turn ended"), TimeoutError()):
+            self.client.call = AsyncMock(
+                side_effect=[
+                    {"data": [{"id": "q", "clientUserMessageId": "client", "input": []}]},
+                    {"deleted": True},
+                    failure,
+                    {},
+                ]
+            )
+            with self.assertRaises(type(failure)):
+                await self.client.promote_queued("first", "client")
+            methods = [c.args[0] for c in self.client.call.await_args_list]
+            self.assertEqual(methods.count("thread/queue/add"), int(isinstance(failure, RpcError)))
+            self.assertEqual(methods.count("turn/steer"), 1)
+
     async def test_busy_message_steers_same_turn_without_second_writer(self):
         self.active = "turn-123"
         session = Session(1, "/project", "test", "first")

@@ -324,6 +324,48 @@ class LiveCodex:
                     return "started"
         return "started"
 
+    async def promote_queued(self, thread_id, client_id):
+        """Move one native queue entry into active work without replaying it."""
+        cursor = None
+        while True:
+            page = await self.call(
+                "thread/queue/list",
+                {
+                    "threadId": thread_id,
+                    "cursor": cursor,
+                    "limit": 100,
+                },
+            )
+            queued = next((q for q in page["data"] if q["clientUserMessageId"] == client_id), None)
+            if queued:
+                break
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return None  # Already consumed or removed by another client.
+        params = {"threadId": thread_id, "queuedSubmissionId": queued["id"]}
+        turn_id = await self.active_turn(thread_id)
+        if not turn_id:
+            return (await self.call("thread/queue/start", params))["turn"]
+        # queue/start rejects busy threads. Claim the queued copy before steering
+        # so native auto-dispatch cannot also execute it as a subsequent turn.
+        if not (await self.call("thread/queue/delete", params))["deleted"]:
+            return None
+        inputs = {
+            "threadId": thread_id,
+            "input": queued["input"],
+            "clientUserMessageId": queued["clientUserMessageId"],
+        }
+        try:
+            response = await self.call("turn/steer", {**inputs, "expectedTurnId": turn_id})
+        except RpcError:
+            # A definite rejection (e.g. the active turn just ended) is safe to
+            # return to the native queue. Never retry an ambiguous transport error.
+            await self.call("thread/queue/add", inputs)
+            raise RpcError(
+                "Could not steer the active turn; your prompt was returned to the queue."
+            )
+        return {"id": response["turnId"], "status": "inProgress"}
+
     async def interrupt(self, thread_id):
         await self.connect()
         turn_id = await self.active_turn(thread_id)

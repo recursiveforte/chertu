@@ -104,6 +104,13 @@ class Frontend(upstream.Bridge):
             or user.id in self.codex.config.allowed_users
         )
 
+    async def on_raw_reaction_add(self, payload):
+        # Raw events also cover prompts no longer present in Discord's message cache.
+        try:
+            await self.codex.reactions.click(payload)
+        except Exception:
+            LOG.exception("Queued prompt reaction handling failed")
+
     async def dispatch_command(self, name, original, interaction, kwargs):
         if not self.allowed_user(interaction.user):
             return await interaction.response.send_message(
@@ -225,9 +232,7 @@ class Frontend(upstream.Bridge):
         # Session/project titles can contain Discord's reserved username text.
         # Adapt only the webhook identity; keep stored titles and avatar seeds.
         display_name = re.sub("discord", "chat", name, flags=re.IGNORECASE)
-        return await super().post_as(
-            channel, display_name, content, thread_id, seed=seed or name
-        )
+        return await super().post_as(channel, display_name, content, thread_id, seed=seed or name)
 
     async def poll_loop(self):
         """Poll Claude without upstream's auto-created harness channels or chat buses."""

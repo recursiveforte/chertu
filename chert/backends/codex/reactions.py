@@ -10,6 +10,8 @@ import time
 
 import discord
 
+from chert.backends.codex.client import RpcError
+
 LOG = logging.getLogger(__name__)
 EMOJI = ("↪️", "👀", "✅", "❌")
 
@@ -18,6 +20,78 @@ class PromptReactions:
     def __init__(self, backend):
         self.backend = backend
         self.messages = {}
+
+    async def click(self, payload):
+        frontend = self.backend.frontend
+        if (
+            str(payload.emoji).replace("\ufe0f", "") != "↪"
+            or getattr(payload.emoji, "id", None) is not None
+            or payload.guild_id != frontend.projects.guild_id
+            or payload.user_id == frontend.user.id
+            or getattr(payload.member, "bot", False)
+            or not frontend.allowed_user(discord.Object(id=payload.user_id))
+        ):
+            return
+        session = next(
+            (
+                s
+                for s in self.backend.store.sessions.values()
+                if any(
+                    e["message"] == payload.message_id and e["channel"] == payload.channel_id
+                    for e in s.prompt_messages
+                )
+            ),
+            None,
+        )
+        if session is None:
+            return
+        channel = self.backend.get_channel(payload.channel_id)
+        if channel is None:
+            channel = await self.backend.fetch_channel(payload.channel_id)
+        project = frontend.projects.for_channel(channel)
+        if project is None or project.archived:
+            return
+        async with self.backend.events.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+            if session.status == "ended" or session.discord_thread in self.backend.stopping:
+                return
+            entry = next(
+                (e for e in session.prompt_messages if e["message"] == payload.message_id), None
+            )
+            if entry is None:
+                return
+            # Consume the user's click too, so their arrow does not remain next
+            # to the bot's running/completed status and they can click again on failure.
+            message = self.messages.get(entry["client_id"]) or channel.get_partial_message(
+                payload.message_id
+            )
+            try:
+                await message.remove_reaction(payload.emoji, discord.Object(id=payload.user_id))
+            except discord.HTTPException:
+                LOG.warning("Could not clear queue click on message %s", payload.message_id)
+            if entry["emoji"] != "↪️":
+                return
+            try:
+                await self.backend.ensure_live(session)
+                turn = await self.backend.live.promote_queued(
+                    session.codex_thread, entry["client_id"]
+                )
+            except (RpcError, OSError, asyncio.TimeoutError) as exc:
+                LOG.warning("Could not promote queued prompt %s: %s", payload.message_id, exc)
+                detail = (
+                    str(exc)
+                    if isinstance(exc, RpcError)
+                    else (
+                        "Delivery could not be confirmed. Check this thread before resending; "
+                        "the prompt may already be running."
+                    )
+                )
+                await self.backend.say(await self.backend.live_channel(session), detail)
+                return
+            if turn:
+                entry.update(turn=turn["id"], emoji="👀")
+                if turn["status"] != "inProgress":
+                    self.observe_turn(session, turn)
+                await self.sync(session)
 
     def track(self, session, source, client_id):
         entry = {
@@ -122,6 +196,13 @@ class PromptReactions:
                     past = False
                     for turn in page["data"]:
                         self.observe_turn(session, turn)
+                        # Steered inputs may omit clientId in persisted history;
+                        # the acknowledged turn ID is also authoritative.
+                        missing.difference_update(
+                            e["client_id"]
+                            for e in session.prompt_messages
+                            if e.get("turn") == turn["id"]
+                        )
                         missing.difference_update(
                             i.get("clientId")
                             for i in turn.get("items", [])

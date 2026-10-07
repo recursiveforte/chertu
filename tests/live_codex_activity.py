@@ -8,6 +8,7 @@ Use --close to verify native closure without resuming history.
 Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
 Use --queue to verify native queuing and Discord prompt reactions.
 Use --bursts to verify rapid project messages share one native conversation.
+Use --queue-steer to promote a queued prompt by clicking its reaction during a real turn.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -125,9 +126,10 @@ async def check_close(frontend, session, channel, consumer):
     )
 
 
-async def check_queue(frontend, session, channel, consumer):
+async def check_queue(frontend, session, channel, consumer, promote=False):
     adapter = frontend.codex
     frontend._connection.user = SimpleNamespace(id=999)
+    adapter.get_channel = lambda _: channel
     sources, transitions, visible = {}, {}, {}
     for ident in (501, 502, 503):
         transitions[ident], visible[ident] = [], set()
@@ -137,7 +139,7 @@ async def check_queue(frontend, session, channel, consumer):
             visible[ident].add(emoji)
 
         async def remove(emoji, user, ident=ident):
-            assert user.id == 999
+            assert user.id in {999, 7}
             visible[ident].discard(emoji)
 
         sources[ident] = SimpleNamespace(
@@ -161,6 +163,27 @@ async def check_queue(frontend, session, channel, consumer):
     queue = await adapter.live.call("thread/queue/list", {"threadId": session.codex_thread})
     assert [q["clientUserMessageId"] for q in queue["data"]] == ["chert:502", "chert:503"]
     print("Follow-ups present in the native Codex queue: PASS", flush=True)
+    if promote:
+        active = await adapter.live.active_turn(session.codex_thread)
+        await frontend.on_raw_reaction_add(
+            SimpleNamespace(
+                message_id=503,
+                channel_id=channel.id,
+                user_id=7,
+                guild_id=1,
+                emoji="↪️",
+                member=SimpleNamespace(bot=False),
+            )
+        )
+        assert visible[503] == {"👀"}, transitions
+        entry = next(e for e in session.prompt_messages if e["message"] == 503)
+        assert entry["turn"] == active
+        queue = await adapter.live.call("thread/queue/list", {"threadId": session.codex_thread})
+        assert [q["clientUserMessageId"] for q in queue["data"]] == ["chert:502"]
+        print(
+            "Raw reaction click → selected native entry removed and steered into the active turn: PASS",
+            flush=True,
+        )
     async with asyncio.timeout(180):
         while session.prompt_messages:
             if consumer.done():
@@ -180,8 +203,22 @@ async def check_queue(frontend, session, channel, consumer):
         },
     )
     turns = page["data"]
-    assert len(turns) == 3 and all(t["status"] == "completed" for t in turns), turns
+    assert len(turns) == (2 if promote else 3) and all(t["status"] == "completed" for t in turns), (
+        turns
+    )
     ids = [[i.get("clientId") for i in t["items"] if i["type"] == "userMessage"] for t in turns]
+    if promote:
+        assert "chert:501" in ids[0] and ids[-1] == ["chert:502"], ids
+        assert any(
+            "QUEUE_503_DONE" in i.get("text", "")
+            for i in turns[0]["items"]
+            if i["type"] == "agentMessage"
+        )
+        print(
+            "Promoted prompt affected the active response, reached ✅, and did not run twice: PASS",
+            flush=True,
+        )
+        return
     assert ids == [["chert:501"], ["chert:502"], ["chert:503"]], ids
     print(
         "Three separate completed turns in FIFO order; ↪️ → 👀 → ✅ (in-memory Discord): PASS",
@@ -301,24 +338,28 @@ async def check_projects(root, config, consumer_factory, worktrees=False, bursts
                         await consumer
                     await asyncio.sleep(0.1)
             assert len(adapter.store.sessions) == 1
-            assert sum(
-                c.args[0] == "thread/start" for c in adapter.live.call.await_args_list
-            ) == 1
+            assert sum(c.args[0] == "thread/start" for c in adapter.live.call.await_args_list) == 1
             history = await adapter.live.call(
                 "thread/turns/list",
-                {"threadId": adapter.store.sessions[300].codex_thread,
-                 "limit": 20, "sortDirection": "asc", "itemsView": "summary"},
+                {
+                    "threadId": adapter.store.sessions[300].codex_thread,
+                    "limit": 20,
+                    "sortDirection": "asc",
+                    "itemsView": "summary",
+                },
             )
             clients = [
-                item.get("clientId") for turn in history["data"]
-                for item in turn.get("items", []) if item.get("type") == "userMessage"
+                item.get("clientId")
+                for turn in history["data"]
+                for item in turn.get("items", [])
+                if item.get("type") == "userMessage"
             ]
             assert clients == ["chert:300", "chert:301", "chert:302"], clients
-            assert all(
-                any(f"CHERT_BURST_{m.id}" in text for text in messages) for m in followers
+            assert all(any(f"CHERT_BURST_{m.id}" in text for text in messages) for m in followers)
+            print(
+                "Three overlapping project prompts → one native thread, FIFO completion: PASS",
+                flush=True,
             )
-            print("Three overlapping project prompts → one native thread, FIFO completion: PASS",
-                  flush=True)
         else:
             await frontend.on_message(source)
         assert 300 in adapter.store.sessions, "Project prompt did not create its session"
@@ -428,6 +469,7 @@ async def main(
     worktree_check=False,
     queue_check=False,
     burst_check=False,
+    queue_steer_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -495,7 +537,9 @@ async def main(
                     "cwd": str(project),
                     "approvalPolicy": "on-request",
                     "sandbox": "workspace-write",
-                    "ephemeral": not (model_check or close_check or queue_check),
+                    "ephemeral": not (
+                        model_check or close_check or queue_check or queue_steer_check
+                    ),
                 },
             )
             sid = response["thread"]["id"]
@@ -543,8 +587,10 @@ async def main(
 
             ticker = asyncio.create_task(heartbeat())
             try:
-                if queue_check:
-                    await check_queue(frontend, session, channel, consumer)
+                if queue_check or queue_steer_check:
+                    await check_queue(
+                        frontend, session, channel, consumer, promote=queue_steer_check
+                    )
                     return
                 if close_check:
                     await check_close(frontend, session, channel, consumer)
@@ -607,5 +653,6 @@ if __name__ == "__main__":
             worktree_check="--worktrees" in sys.argv,
             queue_check="--queue" in sys.argv,
             burst_check="--bursts" in sys.argv,
+            queue_steer_check="--queue-steer" in sys.argv,
         )
     )

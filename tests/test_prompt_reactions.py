@@ -42,6 +42,95 @@ class PromptReactionTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def click(self, message=123, user=1, emoji="↪️", channel=20, guild=1, bot=False):
+        return SimpleNamespace(
+            message_id=message,
+            user_id=user,
+            channel_id=channel,
+            guild_id=guild,
+            emoji=discord.PartialEmoji(name=emoji),
+            member=SimpleNamespace(bot=bot),
+        )
+
+    async def queued_click_setup(self):
+        message = self.message()
+        await self.bot.send_prompt(self.thread, "later", source=message)
+        self.bot.get_channel = lambda _: self.thread
+        self.bot.live.promote_queued = AsyncMock(
+            return_value={"id": "active", "status": "inProgress"}
+        )
+        return message
+
+    async def test_click_promotes_and_consumes_user_arrow_then_completes_with_active_turn(self):
+        message = await self.queued_click_setup()
+        await self.frontend.on_raw_reaction_add(self.click())
+        self.bot.live.promote_queued.assert_awaited_once_with("external", "chert:123")
+        message.add_reaction.assert_awaited_with("👀")
+        self.assertTrue(any(c.args[1].id == 1 for c in message.remove_reaction.await_args_list))
+        await self.event("turn/completed", turn={"id": "active", "status": "completed"})
+        message.add_reaction.assert_awaited_with("✅")
+
+    async def test_click_ignores_unauthorized_bots_wrong_emoji_guild_and_message(self):
+        await self.queued_click_setup()
+        for payload in (
+            self.click(user=3),
+            self.click(user=999),
+            self.click(bot=True),
+            self.click(emoji="👀"),
+            self.click(guild=2),
+            self.click(message=456),
+            self.click(channel=999),
+        ):
+            await self.frontend.on_raw_reaction_add(payload)
+        self.bot.live.promote_queued.assert_not_awaited()
+        await self.frontend.on_raw_reaction_add(self.click(user=2, emoji="↪"))
+        self.bot.live.promote_queued.assert_awaited_once()
+
+    async def test_concurrent_clicks_do_not_promote_twice(self):
+        await self.queued_click_setup()
+        await asyncio.gather(*(self.frontend.on_raw_reaction_add(self.click()) for _ in range(2)))
+        self.bot.live.promote_queued.assert_awaited_once()
+
+    async def test_click_on_closed_stopping_or_archived_project_does_nothing(self):
+        await self.queued_click_setup()
+        session = self.store.sessions[20]
+        session.status = "ended"
+        await self.frontend.on_raw_reaction_add(self.click())
+        session.status = "running"
+        self.bot.stopping.add(20)
+        await self.frontend.on_raw_reaction_add(self.click())
+        self.bot.stopping.clear()
+        self.frontend.projects.for_channel(self.thread).archived = True
+        await self.frontend.on_raw_reaction_add(self.click())
+        self.bot.live.promote_queued.assert_not_awaited()
+
+    async def test_click_after_restart_works_without_cached_discord_message(self):
+        message = await self.queued_click_setup()
+        self.bot.store = SessionStore(self.store.path)
+        self.bot.reactions = PromptReactions(self.bot)
+        self.thread.get_partial_message.return_value = message
+        await self.frontend.on_raw_reaction_add(self.click())
+        self.bot.live.promote_queued.assert_awaited_once()
+        message.add_reaction.assert_awaited_with("👀")
+
+    async def test_failed_promotion_keeps_queue_status_and_reports_uncertainty(self):
+        message = await self.queued_click_setup()
+        self.bot.live.promote_queued.side_effect = TimeoutError()
+        with self.assertLogs("chert.backends.codex.reactions", level="WARNING"):
+            await self.frontend.on_raw_reaction_add(self.click())
+        message.add_reaction.assert_awaited_once_with("↪️")
+        self.assertIn("could not be confirmed", self.bot.say.await_args.args[1])
+
+    async def test_promoted_prompt_reconciles_by_turn_id_without_native_client_id(self):
+        message = await self.queued_click_setup()
+        await self.frontend.on_raw_reaction_add(self.click())
+        self.bot.live.call.side_effect = [
+            {"data": []},
+            {"data": [{"id": "active", "status": "completed", "items": []}]},
+        ]
+        await self.bot.reactions.reconcile(self.store.sessions[20])
+        message.add_reaction.assert_awaited_with("✅")
+
     async def test_native_queue_running_and_completion_replace_only_bot_reactions(self):
         message = self.message()
         await self.bot.send_prompt(self.thread, "later", source=message)

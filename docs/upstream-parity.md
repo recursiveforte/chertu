@@ -23,6 +23,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
 | Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree; rapid Codex follow-ups from the same author share the first thread |
 | Codex prompt reactions | Native queue: ↪️ waiting, 👀 running, ✅ completed; ❌ failed/interrupted/removed |
+| Click ↪️ on a queued Codex prompt | Authorized users send that prompt into the active turn; its reaction becomes 👀, then ✅ on completion |
 | Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
 | `/codex`, `/claude`, `/astra` | Explicit harness launch in the current project; Astra is a Codex alias |
 | `/sessions` | Lists both harnesses for the current project |
@@ -72,6 +73,12 @@ setup and from Discord uses one implementation.
   prompts to turns, and native history repairs missed reaction updates after restart.
   Only the bot's lifecycle reactions are replaced. Failed/interrupted turns and
   removed queue entries never receive a success checkmark.
+  Clicking ↪️ uses uncached Discord reaction events and the native queue's current
+  content, including attachments. It removes the selected queue entry before
+  steering the active turn; idle sessions use native `thread/queue/start` instead.
+  Stale/repeated clicks cannot replay a consumed entry. A definite steer rejection
+  returns the prompt to Codex's queue; ambiguous transport failures are reported
+  without automatically resubmitting. The user's click reaction is removed too.
 - Native terminal clients attach to the same Codex actor instead of creating a
   second conversation.
 - Existing state schemas, native conversation identities, atomic writes, and
@@ -148,6 +155,14 @@ separate turns in FIFO order after the initial turn. All three prompts reached �
 queued prompts transitioned ↪️ → 👀 → ✅, and a reconstructed bridge state recovered
 completion from native history without resubmitting. Discord reaction calls used
 an in-memory sink; this does not establish end-to-end production Discord delivery.
+The `--queue-steer` check also passed on 2026-10-07: an authorized raw reaction
+event selected the second waiting prompt, removed only that native queue entry,
+and steered it into the existing turn. Its text appeared in that turn's response
+and it reached ✅; the other prompt ran afterward, with no duplicate promoted turn.
+Discord events and reaction calls were simulated; inference and queue operations
+used the isolated real daemon. Unit tests additionally cover authorization,
+concurrent clicks, missing queue entries, rejected/ambiguous delivery, and restart
+reconciliation using the acknowledged turn ID when history omits a steering client ID.
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use
