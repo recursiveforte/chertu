@@ -23,6 +23,24 @@ This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream
 
 Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.
 
+Use `/worktrees enabled:True` in a project channel to give each new session a fresh
+Git worktree, or `enabled:False` to use the project directory. `/worktrees` shows
+the current setting; it defaults to off and survives restarts. The channel topic
+also shows the default for new threads and updates when it changes. Plain prompts,
+audio prompts, and explicit harness launches follow this setting.
+`/worktree prompt:…` and `/no-worktree prompt:…` launch one session with the project's
+default harness and override the workspace setting without changing it.
+Existing threads, resumed conversations, and conversation forks keep their directories.
+
+Worktrees start on a unique `chert/<id>` branch from the current committed `HEAD`.
+Uncommitted edits, untracked files, and local environment files are not copied.
+The repository must have a commit; non-Git projects can use `/no-worktree`.
+Worktrees live beside the project registry in `worktrees/<channel-id>/<id>`
+(normally `private/worktrees/`). Projects rooted in a repository subdirectory
+keep that relative subdirectory in the new worktree. Closing a thread or a failed
+launch does not remove its worktree or branch, so work remains available for review
+and manual Git cleanup.
+
 `/archive` moves the project channel, including its history and threads, into **archived**. Archived projects reject new prompts; already-running agents can finish. `/unarchive` moves it back into **projects**. Both commands accept an optional project name. Project bindings and harness choices survive restarts.
 
 The [parity audit](docs/upstream-parity.md) inventories every upstream command, its backend mapping, verified behavior and limitations. The original [Claude reference](docs/claude-backend.md) is retained. `chert/vendor/bridge.py` and `chert/vendor/checkin.py` are the pinned upstream implementations. The application has one project frontend and composes independent harness services. See the [architecture guide](docs/architecture.md).
@@ -78,8 +96,8 @@ Session commands use the harness recorded for the thread. Project channels selec
 
 | Operation | Commands |
 | --- | --- |
-| Projects | `/project name dir`, `/harness [name]`, `/archive [name]`, `/unarchive [name]` |
-| Launch | Plain prompt, `/codex`, `/claude`; `/astra` remains a Codex alias |
+| Projects | `/project name dir`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
+| Launch | Plain prompt, `/codex`, `/claude`, `/worktree prompt`, `/no-worktree prompt`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
 | Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/mode`, `/yolo`, `/rename` |
 | Control | `/stop`, `/close`, `/refresh`, `/restart`, `/revive`, `/kill` |

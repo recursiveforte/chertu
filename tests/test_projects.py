@@ -347,6 +347,9 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.directory, str(directory))
         self.assertEqual(ProjectStore(self.projects.path).projects["new"].channel_id, 600)
         self.assertEqual(guild.create_text_channel.call_args.args, ("new",))
+        self.assertIn(
+            "New threads: project directory", guild.create_text_channel.call_args.kwargs["topic"]
+        )
 
     async def test_startup_does_not_run_legacy_claude_setup_or_fetch_harness_channels(self):
         self.bot.fetch_guild = AsyncMock(return_value=SimpleNamespace(id=1, owner_id=7))
@@ -361,6 +364,8 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call.args[0] for call in self.bot.fetch_channel.call_args_list], [100, 200]
         )
+        for channel in self.channels.values():
+            self.assertIn("New threads: project directory", channel.edit.call_args.kwargs["topic"])
 
     async def test_startup_rejects_a_registry_from_a_different_server(self):
         self.projects.guild_id = 999

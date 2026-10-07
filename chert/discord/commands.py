@@ -91,6 +91,20 @@ def install_session_commands(frontend):
         await frontend.dispatch_command("codex", None, interaction, {"prompt": prompt})
 
     @frontend.tree.command(
+        name="worktree",
+        description="Start a new session in a fresh worktree, overriding this project’s default",
+    )
+    async def worktree(interaction: discord.Interaction, prompt: str):
+        await frontend.dispatch_command("worktree", None, interaction, {"prompt": prompt})
+
+    @frontend.tree.command(
+        name="no-worktree",
+        description="Start a new session in the project directory, overriding this project’s default",
+    )
+    async def no_worktree(interaction: discord.Interaction, prompt: str):
+        await frontend.dispatch_command("no-worktree", None, interaction, {"prompt": prompt})
+
+    @frontend.tree.command(
         name="stop", description="Interrupt the active turn without ending the conversation"
     )
     async def stop(interaction: discord.Interaction):

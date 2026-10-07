@@ -9,6 +9,7 @@ import uuid
 import discord
 
 from chert.vendor import bridge as upstream
+from chert.worktrees import session_directory
 from chert.backends.codex import storage as codex_storage
 from chert.backends.codex.terminal import CodexTerminal
 from chert.backends.codex.state import Session
@@ -52,10 +53,14 @@ class CodexBackend:
             name, interaction.channel, interaction.user, arguments, respond
         )
 
-    async def launch(self, project, prompt, user, respond, source=None):
-        thread = await self.start_session(
-            prompt, source_message=source, cwd=Path(project.directory)
-        )
+    async def launch(self, project, prompt, user, respond, source=None, worktree=None):
+        cwd = await session_directory(self.frontend.projects, project, worktree)
+        try:
+            thread = await self.start_session(prompt, source_message=source, cwd=cwd)
+        except Exception as exc:
+            if cwd != Path(project.directory):
+                raise RuntimeError(f"{exc}\nWorktree retained at `{cwd}`.") from exc
+            raise
         if source is None:
             await respond(f"Codex → {thread.mention}")
         return thread
@@ -247,9 +252,13 @@ class CodexBackend:
         self.live.subscribed.add(info["id"])
         self.store.save()
         await self.live.call("thread/name/set", {"threadId": info["id"], "name": title})
-        card = await self.say(
-            thread, f"**{title}** · `{Path(session.cwd).name}`\nReply to talk · `!help`"
+        workspace = Path(session.cwd)
+        workspace_label = (
+            str(workspace)
+            if workspace.is_relative_to(projects.worktree_root(destination))
+            else workspace.name
         )
+        card = await self.say(thread, f"**{title}** · `{workspace_label}`\nReply to talk · `!help`")
         session.status_message, session.status_webhook = card.id, True
         self.store.save()
         if prompt:

@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from chert.vendor import bridge as upstream
+from chert.worktrees import session_directory
 
 
 class ClaudeBackend:
@@ -88,23 +89,24 @@ class ClaudeBackend:
             kwargs = {**kwargs, "to": "astra"}
         return await original(interaction, **kwargs)
 
-    async def launch(self, project, prompt, user, respond, source=None):
+    async def launch(self, project, prompt, user, respond, source=None, worktree=None):
         if not self.frontend.claude_enabled:
             return await respond(
                 "Claude is disabled. Use /harness codex or enable Claude on the bot host."
             )
         async with self.frontend.project_lock:
+            cwd = await session_directory(self.frontend.projects, project, worktree)
             if source:
                 await source.add_reaction("🚀")
             pane, error = await asyncio.to_thread(
-                upstream.spawn_claude, upstream.slug(prompt, 32), project.directory
+                upstream.spawn_claude, upstream.slug(prompt, 32), str(cwd)
             )
             if not pane:
-                return await respond(f"Could not launch Claude: {error}")
+                return await respond(f"Could not launch Claude in `{cwd}`: {error}")
             session, notes = await self.frontend.await_registration(pane)
             if not session:
                 return await respond(
-                    await self.frontend.spawn_failure_text(pane, project.directory, notes)
+                    await self.frontend.spawn_failure_text(pane, str(cwd), notes)
                 )
             # Both launch and discovery use this lock so only one owns thread creation.
             if source:

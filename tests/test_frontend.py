@@ -49,7 +49,7 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(actual.default_permissions, command.default_permissions)
         self.assertEqual(len(original.tree.get_commands()), 34)
-        self.assertEqual(len(self.bot.tree.get_commands()), 36)
+        self.assertEqual(len(self.bot.tree.get_commands()), 39)
 
     async def test_close_uses_thread_backend_and_preserves_permissions(self):
         self.bot.codex.store.sessions[300] = Session(300, self.tmp.name, "test", "native")
@@ -260,6 +260,9 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         for command in self.bot.tree.get_commands():
             if command.name in {
                 "project",
+                "worktrees",
+                "worktree",
+                "no-worktree",
                 "harness",
                 "archive",
                 "unarchive",

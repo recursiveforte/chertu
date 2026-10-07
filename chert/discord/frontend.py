@@ -194,6 +194,10 @@ class Frontend(upstream.Bridge):
             if channel.guild.id != guild_id:
                 raise ValueError(f"Project {project.name} is in another server.")
             self.project_channels[channel.id] = channel
+            try:
+                await self.project_commands.sync_topic(project)
+            except discord.HTTPException:
+                LOG.exception("Could not update project topic for %s", project.name)
         self.main_channel = next(
             (
                 self.project_channels[p.channel_id]
@@ -349,15 +353,19 @@ class Frontend(upstream.Bridge):
                 return await interaction.response.send_message(
                     self.project_sessions(project), allowed_mentions=upstream.NO_PING
                 )
-            if name in {"claude", "codex", "astra"}:
+            if name in {"claude", "codex", "astra", "worktree", "no-worktree"}:
                 await interaction.response.defer(thinking=True)
 
                 async def respond(text):
                     return await interaction.followup.send(text, allowed_mentions=upstream.NO_PING)
 
                 harness = "codex" if name == "astra" else name
+                options = {}
+                if name in {"worktree", "no-worktree"}:
+                    harness = project.harness
+                    options["worktree"] = name == "worktree"
                 return await self.backends[harness].launch(
-                    project, kwargs["prompt"], interaction.user, respond
+                    project, kwargs["prompt"], interaction.user, respond, **options
                 )
             backend = self.backend_for(interaction.channel)
             if backend is None:

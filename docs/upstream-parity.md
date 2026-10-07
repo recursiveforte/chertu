@@ -18,8 +18,10 @@ shared rendering; the current product intentionally uses project channels.
 | --- | --- |
 | `/project name dir` | Registers an existing host directory and creates its channel |
 | `/harness [name]` | Changes the durable default for new sessions; existing threads retain their harness |
+| `/worktrees [enabled]` | Views/changes the durable per-project default for fresh Git worktrees, shown in the channel topic; defaults to off |
+| `/worktree prompt`, `/no-worktree prompt` | Starts a new session with the project harness, overriding the workspace default once |
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
-| Plain prompts | Opens a message-attached thread in the current project directory |
+| Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree, following its default |
 | Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
 | `/codex`, `/claude`, `/astra` | Explicit harness launch in the current project; Astra is a Codex alias |
 | `/sessions` | Lists both harnesses for the current project |
@@ -69,6 +71,20 @@ setup and from Discord uses one implementation.
 - Dashboard URLs, authenticated local control endpoints, and deployment entrypoints.
 
 ## Verification and limits
+
+Per-project worktrees are a fork extension. Regression checks use real temporary
+Git repositories to verify unique branches, concurrent isolation, dirty source
+preservation, subdirectory projects, non-Git errors, persistence, and project
+routing after restart. Discord/Codex mocks cover launch cwd, command permissions,
+overrides, unchanged existing sessions, and disabled/enabled Claude routing.
+Worktrees and their branches are retained on close and launch failure. History
+resume and conversation forks retain their existing workspace; the default applies
+to fresh sessions. Production Discord worktree launches have not been exercised
+by these tests. On 2026-10-07, `tests/live_codex_activity.py --worktrees` passed
+against an isolated native Codex runtime: a plain prompt used the enabled project
+default, both slash overrides selected the correct cwd and completed inference,
+and an existing worktree session continued after the project harness changed.
+Discord was an in-memory sink; the production daemon and conversations were untouched.
 
 The test suite exercises the production frontend and composed harness components:
 project routing, command schema, permissions, persistence, channel creation,

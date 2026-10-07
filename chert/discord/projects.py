@@ -1,8 +1,10 @@
 """Project lifecycle and its Discord command UI."""
 
+import asyncio
 import os
 import discord
 from chert.projects import create_project_channel
+from chert.worktrees import validate_repository
 
 
 class ProjectCommands:
@@ -76,7 +78,59 @@ class ProjectCommands:
                 project.harness = previous
                 raise
 
+    async def sync_topic(self, project):
+        channel = self.channels.get(project.channel_id) or await self.frontend.fetch_channel(
+            project.channel_id
+        )
+        if getattr(channel, "topic", None) != project.topic:
+            self.channels[project.channel_id] = await channel.edit(
+                topic=project.topic, reason="Update project workspace default"
+            )
+
+    async def set_worktrees(self, project, enabled):
+        async with self.lock:
+            if enabled:
+                await asyncio.to_thread(validate_repository, project.directory)
+            previous = project.worktrees
+            project.worktrees = enabled
+            try:
+                self.registry.save()
+            except Exception:
+                project.worktrees = previous
+                raise
+            try:
+                await self.sync_topic(project)
+            except discord.HTTPException as exc:
+                raise ValueError(
+                    "The workspace default was saved, but the channel topic could not be updated. "
+                    "Retry /worktrees with the same setting to refresh it."
+                ) from exc
+
     def install(self):
+        @self.frontend.tree.command(
+            name="worktrees",
+            description="View or set whether new sessions in this project create worktrees",
+        )
+        async def worktrees_command(interaction: discord.Interaction, enabled: bool | None = None):
+            if not await self.project_permission(interaction):
+                return
+            project = self.registry.for_channel(interaction.channel)
+            if project is None:
+                return await interaction.response.send_message(
+                    "Use /worktrees in a project channel.", ephemeral=True
+                )
+            await interaction.response.defer(ephemeral=True)
+            if enabled is not None:
+                await self.set_worktrees(project, enabled)
+            await interaction.followup.send(
+                f"New sessions in <#{project.channel_id}> use "
+                + ("**a fresh worktree**." if project.worktrees else "**the project directory**.")
+                + " Set `/worktrees enabled:True` or `enabled:False` to change this."
+                + " Override once with `/worktree prompt:…` or `/no-worktree prompt:…`."
+                + " Existing threads keep their directories.",
+                ephemeral=True,
+            )
+
         @self.frontend.tree.command(
             name="project", description="Create a project channel for a directory on the bot host"
         )

@@ -14,6 +14,7 @@ class Project:
     channel_id: int
     harness: str = "codex"
     archived: bool = False
+    worktrees: bool = False
 
     def __post_init__(self):
         self.directory = str(Path(self.directory).expanduser().resolve())
@@ -22,7 +23,12 @@ class Project:
 
     @property
     def topic(self):
-        return f"Project: {self.name} · {self.directory} · /harness to choose an agent · /archive or /unarchive"
+        workspace = "worktree" if self.worktrees else "project directory"
+        return (
+            f"Project: {self.name} · {self.directory} · New threads: {workspace}"
+            " · /worktrees to change · /worktree or /no-worktree to override"
+            " · /harness to choose an agent · /archive or /unarchive"
+        )
 
 
 class ProjectStore:
@@ -54,8 +60,16 @@ class ProjectStore:
         if not directory:
             return None
         directory = Path(directory).expanduser().resolve()
+        # Managed worktrees can live outside the source project (or inside a
+        # different project, e.g. Chert's own private runtime directory).
+        for project in self.projects.values():
+            if directory.is_relative_to(self.worktree_root(project)):
+                return project
         matches = [p for p in self.projects.values() if directory.is_relative_to(Path(p.directory))]
         return max(matches, key=lambda p: len(Path(p.directory).parts), default=None)
+
+    def worktree_root(self, project):
+        return (self.path.parent / "worktrees" / str(project.channel_id)).resolve()
 
     def validate(self, name, directory, root):
         name = name.strip().lower()

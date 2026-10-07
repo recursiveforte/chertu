@@ -5,6 +5,7 @@ Use --model to exercise the real /model command and subsequent inference instead
 Use --projects to check project launches, routing, and harness changes with a real
 isolated Codex runtime and in-memory Discord channels.
 Use --close to verify native closure without resuming history.
+Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -116,7 +117,7 @@ async def check_close(frontend, session, channel, consumer):
     print("Closed session stays archived across activity and discovery ticks (in-memory): PASS", flush=True)
 
 
-async def check_projects(root, config, consumer_factory):
+async def check_projects(root, config, consumer_factory, worktrees=False):
     from chert.projects import Project, ProjectStore
     from chert.discord.frontend import Frontend
 
@@ -158,6 +159,11 @@ async def check_projects(root, config, consumer_factory):
     await adapter.live.connect()
     consumer = asyncio.create_task(consumer_factory(adapter))
     try:
+        if worktrees:
+            from test_worktrees import repository
+
+            repository(config.project_root)
+            await frontend.project_commands.set_worktrees(projects.projects["work"], True)
         await frontend.on_message(source)
         assert 300 in adapter.store.sessions, "Project prompt did not create its session"
         session = adapter.store.sessions[300]
@@ -178,7 +184,12 @@ async def check_projects(root, config, consumer_factory):
                 "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
             )
         )["thread"]
-        assert Path(native["cwd"]) == config.project_root
+        if worktrees:
+            assert Path(native["cwd"]) != config.project_root
+            assert (Path(native["cwd"]) / "tracked.txt").read_text() == "committed"
+            assert projects.for_directory(native["cwd"]) is projects.projects["work"]
+        else:
+            assert Path(native["cwd"]) == config.project_root
         source.create_thread.assert_awaited_once()
         print(
             "Project prompt → correct native directory and attached Discord thread: PASS",
@@ -207,13 +218,43 @@ async def check_projects(root, config, consumer_factory):
             "Default harness change persists; existing thread still completes a real Codex turn: PASS",
             flush=True,
         )
+        if worktrees:
+            await frontend.project_commands.set_harness(project, "codex")
+            original_cwd = session.cwd
+            for name, enabled, identifier in (("no-worktree", True, 301), ("worktree", False, 302)):
+                await frontend.project_commands.set_worktrees(project, enabled)
+                thread = SimpleNamespace(
+                    id=identifier, parent_id=100, parent=parent, archived=False,
+                    mention=f"<#{identifier}>",
+                )
+                parent.create_thread = AsyncMock(return_value=thread)
+                adapter.live_channel = AsyncMock(return_value=thread)
+                interaction = SimpleNamespace(
+                    channel=parent, user=source.author,
+                    response=SimpleNamespace(defer=AsyncMock()),
+                    followup=SimpleNamespace(send=AsyncMock()),
+                )
+                await frontend.tree.get_command(name)._do_call(
+                    interaction, {"prompt": "Reply exactly CHERT_WORKTREE_OK. Do not use tools."}
+                )
+                session = adapter.store.sessions[identifier]
+                await completed()
+                native = (await adapter.live.call(
+                    "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
+                ))["thread"]
+                assert (Path(native["cwd"]) == config.project_root) == (name == "no-worktree")
+                assert native["cwd"] == session.cwd
+                assert projects.for_directory(session.cwd) is project
+                assert project.worktrees == enabled
+                assert adapter.store.sessions[300].cwd == original_cwd
+                print(f"/{name} override → correct native cwd and completed inference: PASS", flush=True)
     finally:
         consumer.cancel()
         await asyncio.gather(consumer, return_exceptions=True)
         await frontend.close()
 
 
-async def main(model_check=False, project_check=False, close_check=False):
+async def main(model_check=False, project_check=False, close_check=False, worktree_check=False):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     with tempfile.TemporaryDirectory(prefix="chert-qa-", dir="/tmp") as temporary:
@@ -256,7 +297,7 @@ async def main(model_check=False, project_check=False, close_check=False):
                 discover=False,
                 live_socket=socket,
             )
-            if project_check:
+            if project_check or worktree_check:
 
                 async def consume_project(adapter):
                     while True:
@@ -266,7 +307,7 @@ async def main(model_check=False, project_check=False, close_check=False):
                         finally:
                             adapter.live.notifications.task_done()
 
-                await check_projects(root, config, consume_project)
+                await check_projects(root, config, consume_project, worktrees=worktree_check)
                 return
             frontend = make_frontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
@@ -383,4 +424,5 @@ if __name__ == "__main__":
         model_check="--model" in sys.argv,
         project_check="--projects" in sys.argv,
         close_check="--close" in sys.argv,
+        worktree_check="--worktrees" in sys.argv,
     ))
