@@ -301,6 +301,9 @@ async def main(model_check=False, project_check=False):
                     "Do not modify any files. After the command finishes, reply exactly CHERT_ACTIVITY_DONE.",
                 )
                 assert any("**exploring**" in m for m in messages), "No immediate working card"
+                assert any(
+                    c.args[1].startswith("🔭 ") for c in frontend.retitle.call_args_list
+                ), "No working thread title"
                 print("Immediate working card: PASS", flush=True)
                 async with asyncio.timeout(180):
                     while session.status not in {"idle", "error", "interrupted"}:
@@ -309,6 +312,8 @@ async def main(model_check=False, project_check=False):
                         await asyncio.sleep(0.2)
                 await live.notifications.join()
                 assert session.status == "idle", f"Turn did not complete: {session.status}"
+                assert frontend.retitle.call_args.args[1].startswith("🔥 "), "No idle thread title"
+                print("Native working → idle thread emoji (in-memory Discord): PASS", flush=True)
                 assert any("CHERT_ACTIVITY_DONE" in m for m in messages), "Final reply missing"
                 assert any("turn done" in m for m in edits), "Completion card missing"
                 assert session.activity.get("counts"), "Tool progress missing"

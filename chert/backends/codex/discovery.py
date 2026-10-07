@@ -73,7 +73,7 @@ class CodexDiscovery:
                             or "Codex"
                         )
                         thread = await parent.create_thread(
-                            name=thread_title(title),
+                            name=thread_title(title, status=live_status(info)),
                             type=discord.ChannelType.public_thread,
                             auto_archive_duration=1440,
                         )
@@ -110,7 +110,6 @@ class CodexDiscovery:
                         # Upgrade the old bot-authored status card once, without
                         # recreating the thread or replaying the conversation.
                         channel = await self.backend.live_channel(session)
-                        await channel.edit(name=thread_title(session.name))
                         card = await self.backend.say(
                             channel, activity_text(session, session.status, session.turn_started)
                         )

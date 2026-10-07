@@ -48,6 +48,10 @@ setup and from Discord uses one implementation.
   webhook payload; they do not send test messages to production Discord.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
+- Codex thread prefixes follow activity: 🔭 working/exploring, 📡 waiting for
+  approval/input, 🔥 idle, ⏹ interrupted, ❌ failed, ⚪ disconnected, 🌌 ended.
+  Names and collision suffixes are preserved. Background renames coalesce to the
+  latest state; Discord's per-thread rename rate limits can delay the visible emoji.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
 - A parameterless `/model` picker; selected model/effort settings persist until
@@ -65,12 +69,16 @@ project routing, command schema, permissions, persistence, channel creation,
 archiving, per-thread harness ownership, discovery, recovery, activity rendering,
 model choices, approval/input controls, dashboard routes/assets, backup paths,
 and HTTP authorization. Upstream contract tests detect changes to audited source.
+Thread emoji tests cover lifecycle transitions, muted sessions, failed rename
+recovery, and completion/ending while an older rename is blocked.
 
 `tests/live_codex_activity.py` uses a separate temporary Codex home and app-server,
 with an in-memory Discord sink. Its checks cover real inference/tool activity,
 heartbeat and completion, the model picker followed by actual model switching,
 and project cwd/thread routing after changing the default harness. These checks
 never touch production Discord or run prompts in existing user conversations.
+The activity check also asserts working and idle thread titles against the
+in-memory Discord sink; it does not establish real Discord rename latency.
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use

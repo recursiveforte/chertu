@@ -398,6 +398,7 @@ class CodexEvents:
         self.backend.store.save()
 
     async def update_live_status(self, session):
+        await self.update_thread_title(session)
         if session.muted:
             return
         from chert.backends.codex.presentation import activity_text
@@ -532,6 +533,15 @@ class CodexEvents:
         changed_name = bool(info.get("name") and info["name"] != session.name)
         if info.get("name"):
             session.name = info["name"]
+        await self.update_thread_title(session)
+        if changed_name:
+            channel = await self.backend.live_channel(session)
+            await self.backend.frontend.say(channel, f"-# ✏️ renamed to **{session.name}**")
+        self.backend.store.save()
+
+    async def update_thread_title(self, session):
+        from chert.backends.codex.presentation import thread_title
+
         collision = any(
             s is not session and s.status != "ended" and s.name == session.name
             for s in self.backend.store.sessions.values()
@@ -539,14 +549,21 @@ class CodexEvents:
         # Codex IDs are UUIDv7, so their leading digits are a shared timestamp.
         # Use the entropy-bearing tail when upstream's renderer needs a short suffix.
         short_id = (session.codex_thread or "")[-4:]
-        title = upstream.thread_title(session.name, short_id, collision)
-        if title != session.thread_title_cache:
-            channel = await self.backend.live_channel(session)
-            if getattr(channel, "name", None) != title:
-                self.backend.frontend.retitle(channel, title)
+        title = thread_title(
+            session.name, status=session.status, sid=short_id, collides=collision
+        )
+        channel = await self.backend.live_channel(session)
+        frontend = self.backend.frontend
+        pending = session.discord_thread in frontend._retitling
+        # Replace queued work even when the visible name already matches: an
+        # older edit may still be sleeping on a Discord rate limit. Retry failed
+        # edits on discovery even if the cached desired title hasn't changed.
+        if title != session.thread_title_cache or (
+            not pending and getattr(channel, "name", None) != title
+        ):
+            if pending or getattr(channel, "name", None) != title:
+                frontend.retitle(channel, title)
             session.thread_title_cache = title
-            if changed_name:
-                await self.backend.frontend.say(channel, f"-# ✏️ renamed to **{session.name}**")
         self.backend.store.save()
 
     async def observe_status(self, session, info):

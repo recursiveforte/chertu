@@ -17,7 +17,7 @@ from chert.backends.codex.events import CodexEvents
 from chert.backends.codex.controls import CodexControls, text_arguments
 from chert.backends.codex.discovery import CodexDiscovery
 from chert.backends.codex.client import RpcError
-from chert.backends.codex.presentation import prompt_name, speaker_name
+from chert.backends.codex.presentation import prompt_name, speaker_name, thread_title
 
 LOG = logging.getLogger(__name__)
 
@@ -223,11 +223,11 @@ class CodexBackend:
         if source_message:
             await source_message.add_reaction("🚀")
             thread = await source_message.create_thread(
-                name=upstream.thread_title(title, info["id"], False), auto_archive_duration=10080
+                name=thread_title(title), auto_archive_duration=10080
             )
         else:
             thread = await parent.create_thread(
-                name=upstream.thread_title(title, info["id"], False),
+                name=thread_title(title),
                 type=discord.ChannelType.public_thread,
                 auto_archive_duration=10080,
             )
@@ -370,7 +370,13 @@ class CodexBackend:
             self.store.save()
             await self.say(thread, "Session ended." if end else "Stopped. Reply to continue.")
             if end:
-                await thread.edit(name=upstream.ended_title(session.name), archived=True)
+                title = thread_title(session.name, ended=True)
+                # A pending, rate-limited activity rename must not resurrect
+                # a working emoji after this thread has been ended.
+                self.frontend._titles[thread.id] = title
+                session.thread_title_cache = title
+                self.store.save()
+                await thread.edit(name=title, archived=True)
         finally:
             self.stopping.discard(thread.id)
 
