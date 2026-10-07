@@ -76,7 +76,12 @@ Thread emoji tests cover lifecycle transitions, muted sessions, failed rename
 recovery, and completion/ending while an older rename is blocked.
 `/close` tests exercise authorization, backend routing (including disabled Claude),
 archived projects, and ending only the selected Codex session while archiving its
-Discord thread and preserving its mapping. Codex RPC and Discord calls are mocked;
+Discord thread and preserving its mapping. Codex closure archives Discord before
+native cleanup, never resumes history to close, reports native cleanup failures,
+and sends an ephemeral command response so it cannot reopen the thread. The ended
+title is queued separately so rename throttling cannot delay archiving. Tests also
+cover broken history, native cleanup errors, Discord permission errors/retries,
+missing native IDs, and blocked renames. Codex RPC and Discord calls are mocked;
 these checks do not establish live thread closure in production Discord.
 
 `tests/live_codex_activity.py` uses a separate temporary Codex home and app-server,
@@ -84,6 +89,10 @@ with an in-memory Discord sink. Its checks cover real inference/tool activity,
 heartbeat and completion, the model picker followed by actual model switching,
 and project cwd/thread routing after changing the default harness. These checks
 never touch production Discord or run prompts in existing user conversations.
+The `--close` check exercises native archiving without attaching history, with an
+in-memory Discord archive call. This check passed on 2026-10-06: the isolated
+native actor unloaded and the Discord archive payload was verified. It does not
+establish live closure of a production Discord thread.
 The activity check also asserts working and idle thread titles against the
 in-memory Discord sink; it does not establish real Discord rename latency.
 

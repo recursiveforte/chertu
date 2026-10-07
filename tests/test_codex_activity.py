@@ -56,7 +56,8 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         async def edit(**kwargs):
             editing.set()
             await release.wait()
-            self.channel.name = kwargs["name"]
+            if "name" in kwargs:
+                self.channel.name = kwargs["name"]
 
         self.channel.edit.side_effect = edit
         await self.start()
@@ -91,12 +92,14 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         async def edit(**kwargs):
             if kwargs.get("name") == "🔭 original":
                 await release.wait()
-            self.channel.name = kwargs["name"]
+            if "name" in kwargs:
+                self.channel.name = kwargs["name"]
 
         self.channel.edit.side_effect = edit
         await self.start()
         await asyncio.sleep(0)
-        await self.adapter.stop(self.channel, end=True)
+        await asyncio.wait_for(self.adapter.stop(self.channel, end=True), 1)
+        self.channel.edit.assert_any_await(archived=True)
         release.set()
         await asyncio.gather(*self.host._title_tasks)
         self.assertEqual(self.channel.name, "🌌 original")

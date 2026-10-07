@@ -205,13 +205,60 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.frontend.tree.get_command("close")._do_call(interaction, {})
         self.bot.live.interrupt.assert_awaited_once_with("external")
         self.bot.live.call.assert_awaited_once_with("thread/archive", {"threadId": "external"})
-        self.thread.edit.assert_awaited_once_with(name="🌌 test", archived=True)
+        self.thread.edit.assert_awaited_once_with(archived=True)
+        self.frontend.retitle.assert_called_once_with(self.thread, "🌌 test")
+        interaction.response.defer.assert_awaited_once_with(thinking=True, ephemeral=True)
+        self.assertTrue(interaction.followup.send.call_args.kwargs["ephemeral"])
         self.thread.delete.assert_not_called()
         saved = SessionStore(self.store.path)
         self.assertEqual(saved.sessions[20].status, "ended")
         self.assertEqual(saved.sessions[20].codex_thread, "external")
         self.assertEqual(saved.sessions[21].status, "idle")
         self.bot.live.close.assert_not_called()
+
+    async def test_close_does_not_attach_to_broken_history(self):
+        self.bot.live.attach.side_effect = RpcError("missing source rollout")
+        await self.bot.stop(self.thread, end=True)
+        self.bot.live.attach.assert_not_called()
+        self.thread.edit.assert_awaited_once_with(archived=True)
+        self.bot.live.call.assert_awaited_once_with("thread/archive", {"threadId": "external"})
+        self.bot.say.assert_not_called()
+
+    async def test_close_archives_discord_before_failed_native_cleanup(self):
+        async def interrupt(sid):
+            self.thread.edit.assert_awaited_once_with(archived=True)
+            raise RpcError("missing source rollout")
+
+        self.bot.live.interrupt.side_effect = interrupt
+        self.bot.live.call.side_effect = RpcError("already has an active writer")
+        with self.assertLogs("chert.backends.codex.backend", level="WARNING"):
+            result = await self.bot.stop(self.thread, end=True)
+        self.assertIn("Discord thread closed", result)
+        self.assertIn("may still be running", result)
+        self.assertEqual(SessionStore(self.store.path).sessions[20].status, "ended")
+        self.bot.live.call.assert_awaited_once_with("thread/archive", {"threadId": "external"})
+        self.assertFalse(self.bot.stopping)
+        await self.bot.discover_once()
+        self.assertEqual(self.store.sessions[20].status, "ended")
+        self.bot.live.attach.assert_not_called()
+
+    async def test_close_without_native_thread_does_not_create_one(self):
+        self.store.sessions[20].codex_thread = None
+        await self.bot.stop(self.thread, end=True)
+        self.thread.edit.assert_awaited_once_with(archived=True)
+        self.bot.live.call.assert_not_called()
+        self.bot.live.interrupt.assert_not_called()
+
+    async def test_close_reports_discord_archive_failure_and_can_be_retried(self):
+        self.thread.edit.side_effect = discord.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"), "Missing permissions"
+        )
+        with self.assertRaises(discord.Forbidden):
+            await self.bot.stop(self.thread, end=True)
+        self.assertFalse(self.bot.stopping)
+        self.thread.edit.side_effect = None
+        await self.bot.stop(self.thread, end=True)
+        self.assertEqual(self.thread.edit.await_count, 2)
 
     async def test_external_resume_reopens_existing_thread_after_observed_exit(self):
         self.store.sessions.clear()

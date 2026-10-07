@@ -4,6 +4,7 @@ Run on the deployment host: .venv/bin/python tests/live_codex_activity.py
 Use --model to exercise the real /model command and subsequent inference instead.
 Use --projects to check project launches, routing, and harness changes with a real
 isolated Codex runtime and in-memory Discord channels.
+Use --close to verify native closure without resuming history.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -79,6 +80,28 @@ async def check_model(frontend, session, channel, consumer):
     assert actual == target, f"Slash command selected {target}, but runtime used {actual}"
     assert "model" not in session.pending_settings
     print(f"Real /model and completed inference: PASS ({before} → {actual})", flush=True)
+
+
+async def check_close(frontend, session, channel, consumer):
+    adapter = frontend.codex
+    await adapter.send_prompt(channel, "Reply exactly OK. Do not use tools.")
+    async with asyncio.timeout(120):
+        while session.status not in {"idle", "error", "interrupted"}:
+            if consumer.done():
+                await consumer
+            await asyncio.sleep(0.1)
+    await adapter.live.notifications.join()
+    assert session.status == "idle", f"Inference failed: {session.status}"
+    channel.edit = AsyncMock()
+    adapter.live.subscribed.clear()
+    adapter.live.attach = AsyncMock(side_effect=AssertionError("Close must not resume history"))
+    result = await adapter.stop(channel, end=True)
+    assert result == "Session ended and Discord thread closed.", result
+    channel.edit.assert_awaited_once_with(archived=True)
+    assert session.status == "ended"
+    loaded = await adapter.live.loaded_threads()
+    assert session.codex_thread not in {t["id"] for t in loaded}, "Actor is still loaded"
+    print("Native close without history attachment; Discord archive payload (in-memory): PASS", flush=True)
 
 
 async def check_projects(root, config, consumer_factory):
@@ -178,7 +201,7 @@ async def check_projects(root, config, consumer_factory):
         await frontend.close()
 
 
-async def main(model_check=False, project_check=False):
+async def main(model_check=False, project_check=False, close_check=False):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     with tempfile.TemporaryDirectory(prefix="chert-qa-", dir="/tmp") as temporary:
@@ -243,7 +266,7 @@ async def main(model_check=False, project_check=False):
                     "cwd": str(project),
                     "approvalPolicy": "on-request",
                     "sandbox": "workspace-write",
-                    "ephemeral": not model_check,
+                    "ephemeral": not (model_check or close_check),
                 },
             )
             sid = response["thread"]["id"]
@@ -291,6 +314,9 @@ async def main(model_check=False, project_check=False):
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if close_check:
+                    await check_close(frontend, session, channel, consumer)
+                    return
                 if model_check:
                     await check_model(frontend, session, channel, consumer)
                     return
@@ -346,4 +372,8 @@ async def main(model_check=False, project_check=False):
 
 
 if __name__ == "__main__":
-    asyncio.run(main(model_check="--model" in sys.argv, project_check="--projects" in sys.argv))
+    asyncio.run(main(
+        model_check="--model" in sys.argv,
+        project_check="--projects" in sys.argv,
+        close_check="--close" in sys.argv,
+    ))

@@ -41,11 +41,11 @@ class CodexBackend:
         return channel_id in self.store.sessions
 
     async def command(self, name, original, interaction, arguments):
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=name == "kill")
 
         async def respond(text):
             await interaction.followup.send(
-                text, allowed_mentions=upstream.NO_PING, suppress_embeds=True
+                text, allowed_mentions=upstream.NO_PING, suppress_embeds=True, ephemeral=name == "kill"
             )
 
         return await self.controls.execute(
@@ -350,35 +350,67 @@ class CodexBackend:
             raise ValueError("This session is already stopping.")
         self.stopping.add(thread.id)
         try:
+            if end:
+                return await self.end_session(thread, session)
             await self.ensure_live(session)
-            await self.live.interrupt(session.codex_thread)
-            deadline = time.monotonic() + 15
-            while await self.live.active_turn(session.codex_thread):
-                if time.monotonic() >= deadline:
-                    raise ValueError(
-                        "Codex has not finished interrupting this turn yet. Try again shortly."
-                    )
-                await asyncio.sleep(0.2)
-            session.status = "ended" if end else "idle"
-            if end:
-                session.ended_seen_absent = False
-                session.ended_at = time.time()
-                await self.terminal.close(session)
-                await self.live.call("thread/archive", {"threadId": session.codex_thread})
-                self.live.subscribed.discard(session.codex_thread)
-                session.deadline = None
+            await self.interrupt_session(session)
+            session.status = "idle"
             self.store.save()
-            await self.say(thread, "Session ended." if end else "Stopped. Reply to continue.")
-            if end:
-                title = thread_title(session.name, ended=True)
-                # A pending, rate-limited activity rename must not resurrect
-                # a working emoji after this thread has been ended.
-                self.frontend._titles[thread.id] = title
-                session.thread_title_cache = title
-                self.store.save()
-                await thread.edit(name=title, archived=True)
+            await self.say(thread, "Stopped. Reply to continue.")
         finally:
             self.stopping.discard(thread.id)
+
+    async def interrupt_session(self, session):
+        await self.live.interrupt(session.codex_thread)
+        deadline = time.monotonic() + 15
+        while await self.live.active_turn(session.codex_thread):
+            if time.monotonic() >= deadline:
+                raise ValueError(
+                    "Codex has not finished interrupting this turn yet. Try again shortly."
+                )
+            await asyncio.sleep(0.2)
+
+    async def end_session(self, thread, session):
+        # Closing Discord must not depend on loading damaged native history or
+        # on Discord's much slower per-thread title-change rate limit.
+        session.status = "ended"
+        session.ended_seen_absent = False
+        session.ended_at = time.time()
+        session.deadline = None
+        title = thread_title(session.name, ended=True)
+        self.frontend._titles[thread.id] = title
+        session.thread_title_cache = title
+        self.store.save()
+        await thread.edit(archived=True)
+        self.frontend.retitle(thread, title)
+
+        failures = []
+
+        async def cleanup(label, operation):
+            try:
+                await asyncio.wait_for(operation(), timeout=20)
+            except (RpcError, OSError, asyncio.TimeoutError, ValueError) as exc:
+                LOG.warning("Could not %s for closed session %s: %s", label, session.codex_thread, exc)
+                failures.append(label)
+
+        await cleanup("close the terminal", lambda: self.terminal.close(session))
+        if session.codex_thread:
+            # Do not resume/unarchive a conversation merely to close it. The
+            # existing actor can be interrupted/archived without attaching.
+            await cleanup("interrupt Codex", lambda: self.interrupt_session(session))
+            await cleanup(
+                "archive Codex",
+                lambda: self.live.call("thread/archive", {"threadId": session.codex_thread}),
+            )
+            self.live.subscribed.discard(session.codex_thread)
+        self.store.save()
+        if failures:
+            return (
+                "Discord thread closed. Could not "
+                + "; ".join(failures)
+                + ". The native conversation may still be running."
+            )
+        return "Session ended and Discord thread closed."
 
     async def maintenance(self):
         await self.wait_until_ready()

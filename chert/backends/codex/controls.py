@@ -155,10 +155,10 @@ class CodexControls:
             self.backend.store.save()
             return await respond("🔇 muted" if session.muted else "🔊 unmuted")
         if name in {"kill", "stop"}:
-            await self.backend.stop(channel, end=name == "kill")
+            result = await self.backend.stop(channel, end=name == "kill")
             if name == "kill" and args.get("how") == "delete":
                 await channel.delete()
-            return await respond("Done.")
+            return await respond(result or "Done.")
         if name in {"restart", "revive", "refresh"}:
             if name == "revive" and args.get("mode") == "fork":
                 return await self.fork(session, "", respond)
