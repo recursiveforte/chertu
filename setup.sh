@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the shared frontend (default), or select a single compatibility backend.
+# Install the project frontend and the requested harness integrations.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 APP="$(pwd)"
@@ -25,7 +25,7 @@ PY="$(command -v python3.12 || command -v python3 || true)"
 [[ -n "$PY" ]] || { echo 'Python 3.11+ is required'; exit 1; }
 "$PY" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required"'
 if (( DRY )); then
-  echo "Would install dependencies, configure ${BACKEND:-the saved backend (default codex)}, and provision Discord."
+  echo "Would install ${BACKEND:-the saved harness integrations} and provision project channels."
   echo 'Would install services unless --no-systemd is set; no files have been changed.'
   exit 0
 fi
@@ -54,16 +54,10 @@ import sys
 import shutil
 from pathlib import Path
 from dotenv import dotenv_values
-from setup_discord import ENV, read_env, write_env
+from chert.provisioning import ENV, read_env, write_env
 backend = sys.argv[1]
-previous = read_env()
-previous_backend = previous.get('CHERT_BACKEND') or 'claude'
-if previous.get('DISCORD_CHANNEL_ID') and previous_backend in {'claude', 'codex'}:
-    key = 'DISCORD_CLAUDE_CHANNEL_ID' if previous_backend == 'claude' else 'DISCORD_CODEX_CHANNEL_ID'
-    if not previous.get(key):
-        write_env({key: previous['DISCORD_CHANNEL_ID']})
 if not ENV.exists():
-    example = Path('docs/claude.env.example' if backend == 'claude' else '.env.example')
+    example = Path('.env.example')
     # Omit blank options so defaults work (int("") and Path("") don't).
     values = {k: v for k, v in dotenv_values(example).items() if v}
     write_env({k: json.dumps(v) if any(c.isspace() for c in v) else v for k, v in values.items()})
@@ -90,7 +84,7 @@ for helper in bin/*; do install -m 755 "$helper" "$HOME/.local/bin/$(basename "$
 import os
 import secrets
 from pathlib import Path
-from setup_discord import read_env
+from chert.provisioning import read_env
 target = Path(read_env().get('HEARTH_HOOK_SECRET') or Path.home()/'.claude/hearth-hook.secret')
 target.parent.mkdir(parents=True, exist_ok=True)
 if not target.exists():
@@ -109,7 +103,7 @@ mkdir -p systemd/rendered
 import getpass
 import sys
 from pathlib import Path
-from setup_discord import read_env
+from chert.provisioning import read_env
 root = Path.cwd()
 names = ['chert-discord-bridge', 'chert-checkin', 'chert-tmux']
 if sys.argv[1] in {'codex', 'both'}:

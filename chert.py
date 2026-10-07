@@ -1,22 +1,7 @@
 #!/usr/bin/env python3
-"""Select Chert's backend without importing the other backend's dependencies."""
-import os
-from pathlib import Path
+"""Compatibility entrypoint for installed bridge services."""
 
-from dotenv import load_dotenv
+from chert.__main__ import main
 
-
-def main():
-    load_dotenv(Path(__file__).with_name('.env'))
-    backend = os.environ.get('CHERT_BACKEND', 'both').strip().lower()
-    if backend in {'both', 'codex'} or os.environ.get('DISCORD_GUILD_ID'):
-        from shared_frontend import main as run
-    elif backend == 'claude':
-        from discord_bot import main as run
-    else:
-        raise SystemExit('CHERT_BACKEND must be both, codex, or claude')
-    run()
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a p
 
 `/archive` moves the project channel, including its history and threads, into **archived**. Archived projects reject new prompts; already-running agents can finish. `/unarchive` moves it back into **projects**. Both commands accept an optional project name. Project bindings and harness choices survive restarts.
 
-The [parity audit](docs/upstream-parity.md) inventories every upstream command, its backend mapping, verified behavior and limitations. The original [Claude reference](docs/claude-backend.md) is retained. `discord_bot.py` and `app.py` are the pinned upstream implementations, not independently rewritten copies.
+The [parity audit](docs/upstream-parity.md) inventories every upstream command, its backend mapping, verified behavior and limitations. The original [Claude reference](docs/claude-backend.md) is retained. `chert/vendor/bridge.py` and `chert/vendor/checkin.py` are the pinned upstream implementations. The application has one project frontend and composes independent harness services. See the [architecture guide](docs/architecture.md).
 
 ## Shared behavior
 
@@ -106,6 +106,10 @@ The bot suppresses model-generated mentions. New categories are private; Discord
 Daemon-based Codex controls use [native thread and turn APIs](https://learn.chatgpt.com/docs/app-server). Command/file/permission approvals and user-input/MCP forms appear in Discord. Approval buttons expire when their native request or connection expires; they never silently approve a newer request. Unsupported custom requests remain available in the original client.
 
 The dashboard reuses the upstream templates at `/claudes/` and `/codex/`. It remains on loopback and retains upstream's authentication-proxy deployment model. Codex's conversation pane uses normalized live transcript records; its screen pane attaches a real terminal. `/log` and `/resume` access native stored history.
+
+## Code organization
+
+Application code lives under `chert/`: `discord/` contains the gateway and UI, `backends/` contains the harnesses, `web/` contains the dashboard and local API, and `vendor/` isolates audited upstream code. Root Python files are thin deployment entrypoints. See [architecture](docs/architecture.md) for component boundaries and retained compatibility paths.
 
 ## Operate and test
 
