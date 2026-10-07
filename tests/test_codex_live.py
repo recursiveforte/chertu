@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 from aiohttp import web
 
-from codex_backend import Session
-from codex_live import LiveCodex, RpcError, discoverable
+from backends.codex_state import Session
+from backends.codex_live import LiveCodex, RpcError, discoverable
 
 
 class LiveTransportTests(unittest.IsolatedAsyncioTestCase):

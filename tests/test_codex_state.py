@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codex_backend import Session, SessionStore
+from backends.codex_state import Session, SessionStore
 from state_io import write_json
 
 

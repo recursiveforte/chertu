@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 import discord_bot as upstream
-from codex_backend import Session, SessionStore
+from backends.codex_state import Session, SessionStore
 from config import Config
 from project_frontend import ProjectFrontend
 from projects import Project, ProjectStore

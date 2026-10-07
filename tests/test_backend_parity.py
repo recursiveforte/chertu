@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import discord
 
 from config import CodexOptions
-from codex_backend import Session, SessionStore
+from backends.codex_state import Session, SessionStore
 from config import Config
 from shared_frontend import SharedFrontend
 from shared_prompts import request_view

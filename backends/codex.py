@@ -14,10 +14,10 @@ import discord
 import discord_bot as upstream
 from backends import codex_storage
 from backends.codex_terminal import CodexTerminal
-from codex_backend import Session
+from backends.codex_state import Session
 from backends.codex_runtime import CodexRuntime
-from codex_live import RpcError, live_status
-from codex_presentation import prompt_name, speaker_name
+from backends.codex_live import RpcError, live_status
+from backends.codex_presentation import prompt_name, speaker_name
 
 LOG = logging.getLogger(__name__)
 TOOL_NAMES = {'commandExecution': 'Bash', 'fileChange': 'Edit', 'mcpToolCall': 'MCP',
@@ -467,7 +467,7 @@ class CodexChannel(CodexRuntime):
     async def update_live_status(self, session):
         if session.muted:
             return
-        from codex_presentation import activity_text
+        from backends.codex_presentation import activity_text
         async with self.card_locks.setdefault(session.discord_thread, asyncio.Lock()):
             now = time.time()
             card = session.activity
@@ -884,7 +884,7 @@ class CodexChannel(CodexRuntime):
             await self.stop(channel)
         await self.ensure_live(session)
         info = (await self.live.call('thread/read', {'threadId': session.codex_thread, 'includeTurns': False}))['thread']
-        from codex_live import live_status
+        from backends.codex_live import live_status
         session.status = live_status(info)
         await channel.edit(archived=False)
         self.store.save()
@@ -1200,7 +1200,7 @@ class CodexChannel(CodexRuntime):
 
     async def observe_status(self, session, info):
         """Repair missed lifecycle events, including attaching halfway through a turn."""
-        from codex_live import live_status
+        from backends.codex_live import live_status
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
             previous_status = session.status
             page = await self.live.call('thread/turns/list', {'threadId': session.codex_thread,

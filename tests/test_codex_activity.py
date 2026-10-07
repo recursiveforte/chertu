@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import discord
 
 import test_backend_parity as fixtures
-from codex_backend import Session
+from backends.codex_state import Session
 
 
 class ActivityTests(unittest.IsolatedAsyncioTestCase):
@@ -65,7 +65,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         hook = await self.adapter.webhook_for()
         body = hook.edit_message.call_args.kwargs['content']
         self.assertIn('✅ turn done · 0m 32s', body)
-        with patch('codex_presentation.time.time', return_value=time.time() + 500):
+        with patch('backends.codex_presentation.time.time', return_value=time.time() + 500):
             await self.adapter.update_live_status(self.session)
         self.assertEqual(hook.edit_message.call_args.kwargs['content'], body)
         self.assertEqual(self.session.turns, 1)

@@ -14,7 +14,7 @@ import discord
 
 import discord_bot as upstream
 from config import CodexOptions
-from codex_backend import SessionStore
+from backends.codex_state import SessionStore
 from config import Config
 
 LOG = logging.getLogger(__name__)

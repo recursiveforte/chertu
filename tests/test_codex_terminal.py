@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from backends.codex_terminal import CodexTerminal
-from codex_backend import Session
+from backends.codex_state import Session
 
 
 class TerminalTests(unittest.IsolatedAsyncioTestCase):

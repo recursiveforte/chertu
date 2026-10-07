@@ -8,9 +8,9 @@ from pathlib import Path
 
 import discord
 
-from codex_backend import Session
-from codex_live import LiveCodex, RpcError, discoverable, live_status
-from codex_presentation import activity_text, thread_title
+from backends.codex_state import Session
+from backends.codex_live import LiveCodex, RpcError, discoverable, live_status
+from backends.codex_presentation import activity_text, thread_title
 
 LOG = logging.getLogger(__name__)
 

@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, Mock
 
 import discord
 
-from codex_backend import Session, SessionStore
+from backends.codex_state import Session, SessionStore
 from config import Config, CodexOptions
-from codex_live import RpcError
+from backends.codex_live import RpcError
 from shared_frontend import SharedFrontend
 
 

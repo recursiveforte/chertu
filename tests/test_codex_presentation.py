@@ -1,7 +1,7 @@
 import unittest
 
-from codex_backend import Session
-from codex_presentation import activity_text, avatar_url, prompt_name, speaker_name, thread_title
+from backends.codex_state import Session
+from backends.codex_presentation import activity_text, avatar_url, prompt_name, speaker_name, thread_title
 
 
 class PresentationTests(unittest.TestCase):

@@ -133,7 +133,7 @@ async def provision_projects(guild, env, reset=False, initial_projects=()):
             project.channel_id = 0
         codex_path = state_paths[1]
         if codex_path.exists():
-            from codex_backend import SessionStore
+            from backends.codex_state import SessionStore
             sessions = SessionStore(codex_path)
             sessions.sessions.clear()
             for key in ('board_msg', 'board_body', 'hub'):
