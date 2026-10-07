@@ -78,6 +78,78 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("0m 30s", self.adapter.say.call_args.args[1])
         self.assertEqual(self.session.status_message, 900)
 
+    async def test_closed_thread_stays_archived_across_activity_ticks_and_restart(self):
+        from chert.backends.codex.state import SessionStore
+
+        await self.start()
+        self.session.activity["last_edit"] = 0
+        self.session.subagents["dirty"] = True
+
+        async def edit(**kwargs):
+            if "archived" in kwargs:
+                self.channel.archived = kwargs["archived"]
+
+        self.channel.edit.side_effect = edit
+        await self.adapter.stop(self.channel, end=True)
+        await asyncio.gather(*self.host._title_tasks)
+        self.channel.edit.reset_mock()
+        self.adapter.say.reset_mock()
+        hook = await self.adapter.webhook_for()
+        hook.edit_message.reset_mock()
+        self.host.render_subs = AsyncMock()
+        for restart in (False, True):
+            if restart:
+                self.adapter.store = SessionStore(self.adapter.store.path)
+            await self.adapter.events.activity_tick()
+            await self.adapter.events.activity_tick()
+            await self.adapter.events.update_live_status(self.adapter.store.sessions[300])
+            self.assertTrue(self.channel.archived)
+        self.channel.edit.assert_not_called()
+        self.adapter.say.assert_not_called()
+        hook.edit_message.assert_not_called()
+        self.host.render_subs.assert_not_called()
+
+    async def test_activity_queued_before_close_rechecks_status_after_lock(self):
+        await self.start()
+        self.session.activity["last_edit"] = 0
+        self.session.subagents["dirty"] = True
+        self.host.render_subs = AsyncMock()
+        lock = self.adapter.events.event_locks[self.session.codex_thread]
+        async with lock:
+            tick = asyncio.create_task(self.adapter.events.activity_tick())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.session.status = "ended"
+            self.channel.archived = True
+        await tick
+        self.assertFalse(self.channel.edit.called)
+        self.host.render_subs.assert_not_called()
+
+    async def test_close_drains_in_flight_status_update_before_archiving(self):
+        await self.start()
+        entered, release = asyncio.Event(), asyncio.Event()
+        hook = await self.adapter.webhook_for()
+
+        async def edit_message(*args, **kwargs):
+            entered.set()
+            await release.wait()
+
+        hook.edit_message.side_effect = edit_message
+        event = asyncio.create_task(self.event(
+            "thread/status/changed",
+            status={"type": "active", "activeFlags": ["waitingOnUserInput"]},
+        ))
+        await entered.wait()
+        closing = asyncio.create_task(self.adapter.stop(self.channel, end=True))
+        try:
+            await asyncio.sleep(0)
+            self.channel.edit.assert_not_called()
+        finally:
+            release.set()
+            await asyncio.gather(event, closing)
+        self.channel.edit.assert_any_await(archived=True)
+        self.assertEqual(self.session.status, "ended")
+
     async def test_deleted_card_is_replaced_and_saved(self):
         await self.start()
         self.session.activity["last_edit"] = 0

@@ -101,7 +101,19 @@ async def check_close(frontend, session, channel, consumer):
     assert session.status == "ended"
     loaded = await adapter.live.loaded_threads()
     assert session.codex_thread not in {t["id"] for t in loaded}, "Actor is still loaded"
+    channel.archived = True
+    session.activity["last_edit"] = 0
+    session.subagents["dirty"] = True
+    await adapter.live.notifications.join()
+    adapter.live_channel.reset_mock()
+    for _ in range(3):
+        await adapter.events.activity_tick()
+        await adapter.discover_once()
+    channel.edit.assert_awaited_once_with(archived=True)
+    adapter.live_channel.assert_not_called()
+    assert session.status == "ended"
     print("Native close without history attachment; Discord archive payload (in-memory): PASS", flush=True)
+    print("Closed session stays archived across activity and discovery ticks (in-memory): PASS", flush=True)
 
 
 async def check_projects(root, config, consumer_factory):

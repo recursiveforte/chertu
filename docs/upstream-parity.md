@@ -83,6 +83,12 @@ cover broken history, native cleanup errors, Discord permission errors/retries,
 missing native IDs, and blocked renames. Codex RPC and Discord calls are mocked;
 these checks do not establish live thread closure in production Discord.
 
+Closed Codex sessions are excluded from activity cards and subagent refreshes,
+including refreshes queued before closure. Closure waits for in-flight discovery,
+event, and card writes before archiving. Regression tests reproduce the old
+heartbeat-driven reopening and verify repeated ticks, persisted closed state
+after restart, and a status write racing with closure using in-memory Discord.
+
 `tests/live_codex_activity.py` uses a separate temporary Codex home and app-server,
 with an in-memory Discord sink. Its checks cover real inference/tool activity,
 heartbeat and completion, the model picker followed by actual model switching,
@@ -92,6 +98,8 @@ The `--close` check exercises native archiving without attaching history, with a
 in-memory Discord archive call. This check passed on 2026-10-06: the isolated
 native actor unloaded and the Discord archive payload was verified. It does not
 establish live closure of a production Discord thread.
+On 2026-10-07, the extended check also passed repeated activity/discovery ticks
+after closure without accessing the Discord channel again (in-memory sink).
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use

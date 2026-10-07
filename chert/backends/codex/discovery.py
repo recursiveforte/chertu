@@ -123,21 +123,24 @@ class CodexDiscovery:
             except (RpcError, discord.HTTPException, OSError, asyncio.TimeoutError) as exc:
                 LOG.warning("Could not discover Codex session %s: %s", info["id"], exc)
         for session in list(self.backend.store.sessions.values()):
-            if (
-                session.status == "ended"
-                and session.codex_thread not in loaded_ids
-                and not session.ended_seen_absent
+            async with self.backend.events.event_locks.setdefault(
+                session.codex_thread, asyncio.Lock()
             ):
-                session.ended_seen_absent = True
-                self.backend.store.save()
-            if (
-                session.backend == "app-server"
-                and session.status != "ended"
-                and session.codex_thread not in loaded_ids
-            ):
-                await self.backend.events.update_thread_title(session)
-                if session.status != "disconnected":
-                    session.status = "disconnected"
+                if (
+                    session.status == "ended"
+                    and session.codex_thread not in loaded_ids
+                    and not session.ended_seen_absent
+                ):
+                    session.ended_seen_absent = True
                     self.backend.store.save()
-                    await self.backend.events.update_live_status(session)
-                self.backend.live.subscribed.discard(session.codex_thread)
+                if (
+                    session.backend == "app-server"
+                    and session.status != "ended"
+                    and session.codex_thread not in loaded_ids
+                ):
+                    await self.backend.events.update_thread_title(session)
+                    if session.status != "disconnected":
+                        session.status = "disconnected"
+                        self.backend.store.save()
+                        await self.backend.events.update_live_status(session)
+                    self.backend.live.subscribed.discard(session.codex_thread)

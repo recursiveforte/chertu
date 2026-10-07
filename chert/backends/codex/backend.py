@@ -373,16 +373,23 @@ class CodexBackend:
     async def end_session(self, thread, session):
         # Closing Discord must not depend on loading damaged native history or
         # on Discord's much slower per-thread title-change rate limit.
-        session.status = "ended"
-        session.ended_seen_absent = False
-        session.ended_at = time.time()
-        session.deadline = None
-        title = thread_title(session.name, ended=True)
-        self.frontend._titles[thread.id] = title
-        session.thread_title_cache = title
-        self.store.save()
-        await thread.edit(archived=True)
-        self.frontend.retitle(thread, title)
+        # Drain discovery and event/card writes before archiving. A write that
+        # already passed its status check could otherwise reopen Discord afterward.
+        async with (
+            self.session_creation_lock,
+            self.events.event_locks.setdefault(session.codex_thread, asyncio.Lock()),
+            self.events.card_locks.setdefault(session.discord_thread, asyncio.Lock()),
+        ):
+            session.status = "ended"
+            session.ended_seen_absent = False
+            session.ended_at = time.time()
+            session.deadline = None
+            title = thread_title(session.name, ended=True)
+            self.frontend._titles[thread.id] = title
+            session.thread_title_cache = title
+            self.store.save()
+            await thread.edit(archived=True)
+            self.frontend.retitle(thread, title)
 
         failures = []
 

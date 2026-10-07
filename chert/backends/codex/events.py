@@ -102,6 +102,8 @@ class CodexEvents:
                 if session.backend != "app-server" or session.status in {"ended", "disconnected"}:
                     continue
                 async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+                    if session.status == "ended":
+                        continue
                     session.status, session.delivery_failed = "disconnected", True
                     self.backend.store.save()
                     try:
@@ -403,6 +405,8 @@ class CodexEvents:
         from chert.backends.codex.presentation import activity_text
 
         async with self.card_locks.setdefault(session.discord_thread, asyncio.Lock()):
+            if session.status == "ended":
+                return
             now = time.time()
             card = session.activity
             if (
@@ -456,6 +460,7 @@ class CodexEvents:
             subs_pending = session.subagents.get("dirty")
             if (
                 session.muted
+                or session.status == "ended"
                 or session.status not in {"running", "waiting"}
                 and not pending
                 and not subs_pending
@@ -472,6 +477,8 @@ class CodexEvents:
                         async with self.event_locks.setdefault(
                             session.codex_thread, asyncio.Lock()
                         ):
+                            if session.status == "ended":
+                                return
                             await self.update_live_status(session)
                             if subs_pending:
                                 state = {
@@ -527,6 +534,8 @@ class CodexEvents:
             await asyncio.sleep(upstream.CARD_MIN_GAP)
 
     async def observe_session(self, session, info):
+        if session.status == "ended":
+            return
         if info.get("cwd"):
             session.cwd = info["cwd"]
         changed_name = bool(info.get("name") and info["name"] != session.name)
@@ -541,6 +550,8 @@ class CodexEvents:
     async def update_thread_title(self, session):
         from chert.backends.codex.presentation import thread_title
 
+        if session.status == "ended":
+            return
         collision = any(
             s is not session and s.status != "ended" and s.name == session.name
             for s in self.backend.store.sessions.values()
@@ -568,6 +579,8 @@ class CodexEvents:
         from chert.backends.codex.client import live_status
 
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+            if session.status == "ended":
+                return
             previous_status = session.status
             page = await self.backend.live.call(
                 "thread/turns/list",
@@ -613,6 +626,8 @@ class CodexEvents:
     async def catch_up(self, session):
         """Recover persisted replies missed during a bridge disconnect; never rerun a turn."""
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
+            if session.status == "ended":
+                return
             if not session.mirror_since:
                 session.mirror_since = discord.utils.snowflake_time(
                     session.discord_thread
