@@ -82,12 +82,16 @@ Session commands use the harness recorded for the thread. Project channels selec
 | Launch | Plain prompt, `/codex`, `/claude`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
 | Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/mode`, `/yolo`, `/rename` |
-| Control | `/stop`, `/refresh`, `/restart`, `/revive`, `/kill` |
+| Control | `/stop`, `/close`, `/refresh`, `/restart`, `/revive`, `/kill` |
 | Inspect | `/log`, `/screen`, `/key`, `/help` |
 | Notifications / budget | `/mute`, `/unmute`, `/supernova` |
 | Host / reviews | `/disk`, `/backup`, `/s3`, `/offload`, `/restore`, `/feldspar` |
 
-The `!` forms are also available. `/fork` defaults to the same backend; selecting the other backend performs a conversation handoff. `/model`, `/globalmodel`, and `/fast` remain owner-only.
+The `!` forms are also available for the original commands. `/fork` defaults to the same backend; selecting the other backend performs a conversation handoff. `/model`, `/globalmodel`, and `/fast` remain owner-only.
+
+Use `/close` inside a session thread to end its session and archive the thread,
+keeping its history. This is a shortcut for `/kill how:end`; `/stop` only interrupts
+the current turn. Use `/revive` or `/resume` to continue an ended session.
 
 In a session thread, `/model` opens a picker showing the current and queued model.
 You can also use `/model name:…` directly. In Codex, the selection applies to the next turn. It

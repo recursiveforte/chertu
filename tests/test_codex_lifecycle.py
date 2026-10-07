@@ -194,6 +194,25 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.sessions[20].status, "ended")
         self.bot.main_channel.create_thread.assert_awaited_once()
 
+    async def test_close_command_ends_and_archives_only_its_session(self):
+        self.store.sessions[21] = Session(21, self.tmp.name, "other", "other-native")
+        interaction = SimpleNamespace(
+            channel=self.thread,
+            user=SimpleNamespace(id=2),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        await self.frontend.tree.get_command("close")._do_call(interaction, {})
+        self.bot.live.interrupt.assert_awaited_once_with("external")
+        self.bot.live.call.assert_awaited_once_with("thread/archive", {"threadId": "external"})
+        self.thread.edit.assert_awaited_once_with(name="🌌 test", archived=True)
+        self.thread.delete.assert_not_called()
+        saved = SessionStore(self.store.path)
+        self.assertEqual(saved.sessions[20].status, "ended")
+        self.assertEqual(saved.sessions[20].codex_thread, "external")
+        self.assertEqual(saved.sessions[21].status, "idle")
+        self.bot.live.close.assert_not_called()
+
     async def test_external_resume_reopens_existing_thread_after_observed_exit(self):
         self.store.sessions.clear()
         info = self.set_up_live()

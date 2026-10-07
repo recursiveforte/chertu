@@ -26,7 +26,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/resume`, `/fork` | Native history reuse/copy or cross-harness handoff |
 | `/model`, `/effort`, `/fast`, `/mode`, `/yolo` | Native settings, with backend-specific capabilities |
 | `/globalmodel` | Explicit harness-wide model default; owner-only |
-| `/stop`, `/kill`, `/restart`, `/refresh`, `/revive` | Session lifecycle controls |
+| `/stop`, `/close`, `/kill`, `/restart`, `/refresh`, `/revive` | Session lifecycle controls; `/close` aliases `/kill how:end` |
 | `/screen`, `/key`, `/log` | Native terminal attachment/control and stored history |
 | `/mute`, `/unmute`, `/supernova` | Session output and time-budget controls |
 | `/disk`, `/backup`, `/s3`, `/offload`, `/restore` | Upstream disk/S3 tools, with both agent homes protected |
@@ -74,6 +74,10 @@ model choices, approval/input controls, dashboard routes/assets, backup paths,
 and HTTP authorization. Upstream contract tests detect changes to audited source.
 Thread emoji tests cover lifecycle transitions, muted sessions, failed rename
 recovery, and completion/ending while an older rename is blocked.
+`/close` tests exercise authorization, backend routing (including disabled Claude),
+archived projects, and ending only the selected Codex session while archiving its
+Discord thread and preserving its mapping. Codex RPC and Discord calls are mocked;
+these checks do not establish live thread closure in production Discord.
 
 `tests/live_codex_activity.py` uses a separate temporary Codex home and app-server,
 with an in-memory Discord sink. Its checks cover real inference/tool activity,

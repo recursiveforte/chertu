@@ -102,6 +102,12 @@ def install_session_commands(frontend):
             {} if name == "stop" else {"key": "esc"},
         )
 
+    @frontend.tree.command(name="close", description="End this session and archive its thread")
+    async def close(interaction: discord.Interaction):
+        await frontend.dispatch_command(
+            "kill", frontend.original_commands["kill"], interaction, {"how": "end"}
+        )
+
     @frontend.tree.error
     async def error(interaction, exc):
         LOG.error("Chert command failed: %s", exc, exc_info=exc)

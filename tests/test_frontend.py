@@ -49,7 +49,46 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(actual.default_permissions, command.default_permissions)
         self.assertEqual(len(original.tree.get_commands()), 34)
-        self.assertEqual(len(self.bot.tree.get_commands()), 35)
+        self.assertEqual(len(self.bot.tree.get_commands()), 36)
+
+    async def test_close_uses_thread_backend_and_preserves_permissions(self):
+        self.bot.codex.store.sessions[300] = Session(300, self.tmp.name, "test", "native")
+        self.bot.codex.stop = AsyncMock()
+        command = self.bot.tree.get_command("close")
+        self.assertEqual(list(command._params), [])
+        interaction = self.interaction(300)
+        self.bot.projects.projects["primary"].archived = True
+        await command._do_call(interaction, {})
+        self.bot.codex.stop.assert_awaited_once_with(interaction.channel, end=True)
+
+        self.bot.codex.stop.reset_mock()
+        interaction.user.id = 999
+        await command._do_call(interaction, {})
+        self.bot.codex.stop.assert_not_called()
+        self.assertIn("restricted", interaction.response.send_message.call_args.args[0])
+
+    async def test_close_routes_claude_to_existing_end_handler(self):
+        original = AsyncMock()
+        self.bot.original_commands["kill"] = original
+        interaction = self.interaction(400)
+        with patch.object(self.bot.claude, "owns_thread", return_value=True):
+            await self.bot.tree.get_command("close")._do_call(interaction, {})
+        original.assert_awaited_once_with(interaction, how="end")
+
+        original.reset_mock()
+        self.bot.claude_enabled = False
+        with patch.object(self.bot.claude, "owns_thread", return_value=True):
+            await self.bot.tree.get_command("close")._do_call(interaction, {})
+        original.assert_not_called()
+        self.assertIn("disabled", interaction.response.send_message.call_args.args[0])
+
+    async def test_close_rejects_unknown_threads_and_unrelated_channels(self):
+        self.bot.codex.stop = AsyncMock()
+        for channel in (300, 999):
+            interaction = self.interaction(channel)
+            await self.bot.tree.get_command("close")._do_call(interaction, {})
+            interaction.response.send_message.assert_awaited_once()
+        self.bot.codex.stop.assert_not_called()
 
     def test_discord_gateway_dispatcher_is_not_shadowed_by_command_routing(self):
         self.assertIs(type(self.bot).dispatch, discord.Client.dispatch)
