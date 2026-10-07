@@ -22,6 +22,7 @@ class LiveCodex:
         self.pending = {}
         self.sequence = 0
         self.notifications = asyncio.Queue(maxsize=2048)
+        self.pending_notifications = {}
         self.subscribed = set()
         self.active_turns = {}
         self.completed_turns = set()
@@ -92,6 +93,18 @@ class LiveCodex:
             if not future.done():
                 future.set_exception(ConnectionError("Codex app-server disconnected."))
 
+    def queue_notification(self, event):
+        self.notifications.put_nowait(event)
+        self.pending_notifications[id(event)] = (event.get("params") or {}).get("threadId", "")
+
+    def notification_handled(self, event):
+        self.pending_notifications.pop(id(event), None)
+
+    def has_pending_notifications(self, thread_id):
+        # Include the event already taken by the consumer but waiting for a
+        # session lock or Discord. Queue.empty() alone misses that event.
+        return any(sid in {"", thread_id} for sid in self.pending_notifications.values())
+
     async def _read(self):
         try:
             async for message in self.ws:
@@ -119,7 +132,7 @@ class LiveCodex:
                         # them on its behalf; tell the Discord user where to respond.
                         key = f"{self.instance}:{self.generation}:{data['id']}"
                         self.server_requests[key] = data
-                        self.notifications.put_nowait(
+                        self.queue_notification(
                             {
                                 "method": "chert/inputRequired",
                                 "requestKey": key,
@@ -140,7 +153,7 @@ class LiveCodex:
                     }:
                         # Never block RPC responses behind slow Discord sends. A full
                         # queue causes a reconnect, rather than deadlocking RPC calls.
-                        self.notifications.put_nowait(data)
+                        self.queue_notification(data)
                 elif data.get("id") in self.pending:
                     future = self.pending[data["id"]]
                     if not future.done():
@@ -153,7 +166,7 @@ class LiveCodex:
         finally:
             self._fail_pending()
             try:
-                self.notifications.put_nowait({"method": "chert/disconnected", "params": {}})
+                self.queue_notification({"method": "chert/disconnected", "params": {}})
             except asyncio.QueueFull:
                 pass  # Discovery will reconnect and reconcile the full queue.
 

@@ -23,12 +23,6 @@ This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream
 
 Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.
 
-For Codex, rapid project-channel messages from the same person continue in the
-first message's thread. Messages join while delivery is pending or within five
-seconds of the previous message; each prompt enters the native queue in order.
-After a longer pause, a project-channel prompt starts a new session. Use `/codex`
-or `!codex …` to explicitly start a separate session at any time.
-
 Use `/worktrees enabled:True` in a project channel to give each new session a fresh
 Git worktree, or `enabled:False` to use the project directory. `/worktrees` shows
 the current setting; it defaults to off and survives restarts. The channel topic

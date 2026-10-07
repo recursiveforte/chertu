@@ -7,8 +7,8 @@ isolated Codex runtime and in-memory Discord channels.
 Use --close to verify native closure without resuming history.
 Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
 Use --queue to verify native queuing and Discord prompt reactions.
-Use --bursts to verify rapid project messages share one native conversation.
 Use --queue-steer to promote a queued prompt by clicking its reaction during a real turn.
+Use --rapid-queue to verify five quick replies leave one completed card per turn.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -37,9 +37,10 @@ async def check_model(frontend, session, channel, consumer):
     adapter.main_channel = SimpleNamespace(id=100)
 
     async def turn():
+        previous_turns = session.turns
         await adapter.send_prompt(channel, "Reply exactly OK. Do not use tools.")
         async with asyncio.timeout(120):
-            while session.status not in {"idle", "error", "interrupted"}:
+            while session.turns == previous_turns and session.status not in {"error", "interrupted"}:
                 if consumer.done():
                     await consumer
                 await asyncio.sleep(0.1)
@@ -88,9 +89,10 @@ async def check_model(frontend, session, channel, consumer):
 
 async def check_close(frontend, session, channel, consumer):
     adapter = frontend.codex
+    previous_turns = session.turns
     await adapter.send_prompt(channel, "Reply exactly OK. Do not use tools.")
     async with asyncio.timeout(120):
-        while session.status not in {"idle", "error", "interrupted"}:
+        while session.turns == previous_turns and session.status not in {"error", "interrupted"}:
             if consumer.done():
                 await consumer
             await asyncio.sleep(0.1)
@@ -151,7 +153,7 @@ async def check_queue(frontend, session, channel, consumer, promote=False):
         source=sources[501],
     )
     async with asyncio.timeout(30):
-        while "👀" not in visible[501]:
+        while "👀" not in visible[501] or session.active_turn is None:
             if consumer.done():
                 await consumer
             await asyncio.sleep(0.1)
@@ -177,7 +179,7 @@ async def check_queue(frontend, session, channel, consumer, promote=False):
         )
         assert visible[503] == {"👀"}, transitions
         entry = next(e for e in session.prompt_messages if e["message"] == 503)
-        assert entry["turn"] == active
+        assert entry["turn"] == active, (entry["turn"], active)
         queue = await adapter.live.call("thread/queue/list", {"threadId": session.codex_thread})
         assert [q["clientUserMessageId"] for q in queue["data"]] == ["chert:502"]
         print(
@@ -252,7 +254,84 @@ async def check_queue(frontend, session, channel, consumer, promote=False):
     )
 
 
-async def check_projects(root, config, consumer_factory, worktrees=False, bursts=False):
+async def check_rapid_queue(frontend, session, channel, consumer):
+    adapter = frontend.codex
+    frontend._connection.user = SimpleNamespace(id=999)
+    rendered, cards, sources = {}, [], []
+
+    async def say(destination, text):
+        assert destination is channel
+        await asyncio.sleep(0.15)  # Discord delivery lags behind the socket reader.
+        ident = len(rendered) + 1
+        rendered[ident] = text
+        if "**exploring**" in text:
+            cards.append(ident)
+        return SimpleNamespace(id=ident)
+
+    async def edit(ident, **kwargs):
+        await asyncio.sleep(0.15)
+        assert ident in rendered
+        rendered[ident] = kwargs["content"]
+
+    adapter.say = say
+    adapter.webhook_for = AsyncMock(return_value=SimpleNamespace(edit_message=edit))
+    for ident in range(1, 6):
+        sources.append(SimpleNamespace(
+            id=500 + ident, channel=channel, author=SimpleNamespace(id=7),
+            content=f"Reply exactly RAPID_REPLY_{ident}. Do not use tools.",
+            webhook_id=None, attachments=[], add_reaction=AsyncMock(), remove_reaction=AsyncMock(),
+            create_thread=AsyncMock(side_effect=AssertionError("Must keep existing thread")),
+        ))
+
+    async def discover():
+        while True:
+            info = (await adapter.live.call(
+                "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
+            ))["thread"]
+            await adapter.events.observe_status(session, info)
+            await asyncio.sleep(0.1)
+
+    poller = None
+    try:
+        await asyncio.gather(*(frontend.on_message(source) for source in sources))
+        poller = asyncio.create_task(discover())
+        async with asyncio.timeout(180):
+            while session.turns < 5 or session.prompt_messages:
+                for task in (consumer, poller):
+                    if task.done():
+                        await task
+                await asyncio.sleep(0.1)
+        await adapter.live.notifications.join()
+        assert session.status == "idle", session.status
+        assert len(adapter.store.sessions) == 1
+        assert len(cards) == 5, f"Expected five cards, got {len(cards)}: {rendered}"
+        assert all("✅ turn done" in rendered[ident] for ident in cards), rendered
+        assert all("**exploring**" not in text for text in rendered.values()), rendered
+        for ident, source in enumerate(sources, 1):
+            assert sum(text.strip() == f"RAPID_REPLY_{ident}" for text in rendered.values()) == 1
+            source.add_reaction.assert_awaited_with("✅")
+            source.create_thread.assert_not_called()
+        page = await adapter.live.call(
+            "thread/turns/list",
+            {"threadId": session.codex_thread, "limit": 10,
+             "sortDirection": "asc", "itemsView": "summary"},
+        )
+        assert len(page["data"]) == 5
+        assert [
+            item.get("clientId") for turn in page["data"] for item in turn["items"]
+            if item["type"] == "userMessage"
+        ] == [f"chert:{source.id}" for source in sources]
+        print("Five rapid prompts in one native thread: FIFO replies and completion reactions PASS",
+              flush=True)
+        print("Slow Discord + concurrent discovery: exactly five finalized cards, no duplicate replies PASS",
+              flush=True)
+    finally:
+        if poller:
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
+
+
+async def check_projects(root, config, consumer_factory, worktrees=False):
     from chert.projects import Project, ProjectStore
     from chert.discord.frontend import Frontend
 
@@ -300,79 +379,22 @@ async def check_projects(root, config, consumer_factory, worktrees=False, bursts
 
             repository(config.project_root)
             await frontend.project_commands.set_worktrees(projects.projects["work"], True)
-        if bursts:
-            entered, release = asyncio.Event(), asyncio.Event()
-
-            async def create(**kwargs):
-                entered.set()
-                await release.wait()
-                return thread
-
-            source.create_thread.side_effect = create
-            followers = [
-                SimpleNamespace(
-                    **{
-                        **vars(source),
-                        "id": identifier,
-                        "content": f"Reply exactly CHERT_BURST_{identifier}. Do not use tools.",
-                        "create_thread": AsyncMock(side_effect=AssertionError("Duplicate thread")),
-                        "add_reaction": AsyncMock(),
-                        "remove_reaction": AsyncMock(),
-                    }
-                )
-                for identifier in (301, 302)
-            ]
-            adapter.live.call = AsyncMock(wraps=adapter.live.call)
-            launch = asyncio.create_task(frontend.on_message(source))
-            await asyncio.wait_for(entered.wait(), 30)
-            pending = [asyncio.create_task(frontend.on_message(m)) for m in followers]
-            await asyncio.sleep(0)
-            release.set()
-            await asyncio.wait_for(asyncio.gather(launch, *pending), 60)
-            async with asyncio.timeout(180):
-                while not all(
-                    any(c.args == ("✅",) for c in m.add_reaction.await_args_list)
-                    for m in [source, *followers]
-                ):
-                    if consumer.done():
-                        await consumer
-                    await asyncio.sleep(0.1)
-            assert len(adapter.store.sessions) == 1
-            assert sum(c.args[0] == "thread/start" for c in adapter.live.call.await_args_list) == 1
-            history = await adapter.live.call(
-                "thread/turns/list",
-                {
-                    "threadId": adapter.store.sessions[300].codex_thread,
-                    "limit": 20,
-                    "sortDirection": "asc",
-                    "itemsView": "summary",
-                },
-            )
-            clients = [
-                item.get("clientId")
-                for turn in history["data"]
-                for item in turn.get("items", [])
-                if item.get("type") == "userMessage"
-            ]
-            assert clients == ["chert:300", "chert:301", "chert:302"], clients
-            assert all(any(f"CHERT_BURST_{m.id}" in text for text in messages) for m in followers)
-            print(
-                "Three overlapping project prompts → one native thread, FIFO completion: PASS",
-                flush=True,
-            )
-        else:
-            await frontend.on_message(source)
+        await frontend.on_message(source)
         assert 300 in adapter.store.sessions, "Project prompt did not create its session"
         session = adapter.store.sessions[300]
 
+        completed_turns = {}
+
         async def completed():
+            previous = completed_turns.get(session.codex_thread, 0)
             async with asyncio.timeout(120):
-                while session.status not in {"idle", "error", "interrupted"}:
+                while session.turns == previous and session.status not in {"error", "interrupted"}:
                     if consumer.done():
                         await consumer
                     await asyncio.sleep(0.1)
             await adapter.live.notifications.join()
             assert session.status == "idle", session.status
+            completed_turns[session.codex_thread] = session.turns
 
         await completed()
         assert any("CHERT_PROJECT_OK" in m for m in messages), "Reply missing from project thread"
@@ -468,8 +490,8 @@ async def main(
     close_check=False,
     worktree_check=False,
     queue_check=False,
-    burst_check=False,
     queue_steer_check=False,
+    rapid_queue_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -513,7 +535,7 @@ async def main(
                 discover=False,
                 live_socket=socket,
             )
-            if project_check or worktree_check or burst_check:
+            if project_check or worktree_check:
 
                 async def consume_project(adapter):
                     while True:
@@ -523,9 +545,7 @@ async def main(
                         finally:
                             adapter.live.notifications.task_done()
 
-                await check_projects(
-                    root, config, consume_project, worktrees=worktree_check, bursts=burst_check
-                )
+                await check_projects(root, config, consume_project, worktrees=worktree_check)
                 return
             frontend = make_frontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
@@ -537,9 +557,9 @@ async def main(
                     "cwd": str(project),
                     "approvalPolicy": "on-request",
                     "sandbox": "workspace-write",
-                    "ephemeral": not (
-                        model_check or close_check or queue_check or queue_steer_check
-                    ),
+                    # Native queued submissions need persisted history; the
+                    # entire isolated home is removed after every check.
+                    "ephemeral": False,
                 },
             )
             sid = response["thread"]["id"]
@@ -587,6 +607,9 @@ async def main(
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if rapid_queue_check:
+                    await check_rapid_queue(frontend, session, channel, consumer)
+                    return
                 if queue_check or queue_steer_check:
                     await check_queue(
                         frontend, session, channel, consumer, promote=queue_steer_check
@@ -604,10 +627,15 @@ async def main(
                     "Run a shell command that sleeps for 23 seconds and then prints CHERT_ACTIVITY_TOOL_OK. "
                     "Do not modify any files. After the command finishes, reply exactly CHERT_ACTIVITY_DONE.",
                 )
+                async with asyncio.timeout(10):
+                    while not messages:
+                        if consumer.done():
+                            await consumer
+                        await asyncio.sleep(0.01)
                 assert any("**exploring**" in m for m in messages), "No immediate working card"
                 print("Immediate working card: PASS", flush=True)
                 async with asyncio.timeout(180):
-                    while session.status not in {"idle", "error", "interrupted"}:
+                    while not session.turns and session.status not in {"error", "interrupted"}:
                         if consumer.done():
                             await consumer
                         await asyncio.sleep(0.2)
@@ -652,7 +680,7 @@ if __name__ == "__main__":
             close_check="--close" in sys.argv,
             worktree_check="--worktrees" in sys.argv,
             queue_check="--queue" in sys.argv,
-            burst_check="--bursts" in sys.argv,
             queue_steer_check="--queue-steer" in sys.argv,
+            rapid_queue_check="--rapid-queue" in sys.argv,
         )
     )

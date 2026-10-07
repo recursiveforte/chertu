@@ -9,6 +9,7 @@ import discord
 
 import test_backend_parity as fixtures
 from chert.backends.codex.state import Session
+from chert.backends.codex.client import LiveCodex
 
 
 class ActivityTests(unittest.IsolatedAsyncioTestCase):
@@ -254,6 +255,110 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         await self.start("two")
         self.assertEqual(self.adapter.say.await_count, 2)
         self.assertEqual(self.session.active_turn, "two")
+
+    async def test_next_active_status_does_not_reopen_previous_completed_card(self):
+        await self.start()
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        hook = await self.adapter.webhook_for()
+        hook.edit_message.reset_mock()
+        await self.event("thread/status/changed", status={"type": "active"})
+        hook.edit_message.assert_not_called()
+        self.assertEqual(self.session.status, "idle")
+        await self.start("two")
+        self.assertEqual(self.adapter.say.await_count, 2)
+
+    async def test_active_status_before_first_turn_does_not_create_extra_card(self):
+        await self.event("thread/status/changed", status={"type": "active"})
+        self.adapter.say.assert_not_called()
+        await self.start()
+        self.adapter.say.assert_awaited_once()
+
+    async def test_submission_does_not_skip_completion_events_waiting_for_discord(self):
+        await self.start()
+        # The socket reader is already on turn two; Discord still has turn one's
+        # completion in its backlog when another prompt is submitted.
+        self.adapter.live.active_turns = {self.session.codex_thread: "two"}
+        await self.adapter.send_prompt(self.channel, "third prompt")
+        self.assertEqual(self.session.active_turn, "one")
+        self.adapter.say.assert_awaited_once()
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        hook = await self.adapter.webhook_for()
+        self.assertIn("turn done", hook.edit_message.call_args.kwargs["content"])
+        await self.start("two")
+        self.assertEqual(self.adapter.say.await_count, 2)
+
+    async def test_queued_submission_keeps_completed_card_final_until_turn_starts(self):
+        await self.start()
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        await self.adapter.send_prompt(self.channel, "next prompt")
+        self.assertEqual(self.session.status, "idle")
+        self.assertIsNone(self.session.active_turn)
+        await self.adapter.events.activity_tick()
+        hook = await self.adapter.webhook_for()
+        self.assertIn("turn done", hook.edit_message.call_args.kwargs["content"])
+
+    async def test_late_progress_for_completed_turn_cannot_create_another_card(self):
+        await self.start()
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        await self.start("two")
+        await self.event("item/started", turnId="one", item={"id": "old", "type": "agentMessage"})
+        await self.event("item/agentMessage/delta", turnId="one", itemId="old", delta="Old reply")
+        self.assertEqual(self.session.active_turn, "two")
+        self.assertEqual(self.adapter.say.await_count, 2)
+
+    async def test_discovery_waits_for_events_even_after_consumer_takes_them(self):
+        await self.start()
+        live = LiveCodex(Path(self.tmp.name) / "unused.sock")
+        live.call = AsyncMock(return_value={"data": [{"id": "two", "status": "inProgress"}]})
+        self.adapter.live = live
+        event = {"method": "turn/completed", "params": {
+            "threadId": self.session.codex_thread, "turn": {"id": "one", "status": "completed"},
+        }}
+        live.queue_notification(event)
+        taken = live.notifications.get_nowait()
+        self.assertTrue(live.notifications.empty())
+        await self.adapter.events.observe_status(self.session, {"status": {"type": "active"}})
+        live.call.assert_not_called()
+        self.assertEqual(self.session.active_turn, "one")
+        await self.adapter.events.handle_live_event(taken)
+        live.notifications.task_done()
+        self.assertFalse(live.has_pending_notifications(self.session.codex_thread))
+        await self.adapter.events.observe_status(self.session, {"status": {"type": "active"}})
+        self.assertEqual(self.session.active_turn, "two")
+
+    async def test_event_arriving_during_history_read_takes_precedence(self):
+        await self.start()
+        live = LiveCodex(Path(self.tmp.name) / "unused.sock")
+        self.adapter.live = live
+
+        async def read(*args):
+            live.queue_notification({"method": "turn/completed", "params": {
+                "threadId": self.session.codex_thread,
+                "turn": {"id": "one", "status": "completed"},
+            }})
+            return {"data": [{"id": "two", "status": "inProgress"}]}
+
+        live.call = AsyncMock(side_effect=read)
+        await self.adapter.events.observe_status(self.session, {"status": {"type": "active"}})
+        self.assertEqual(self.session.active_turn, "one")
+
+    async def test_catchup_defers_without_losing_retry_when_events_are_pending(self):
+        live = LiveCodex(Path(self.tmp.name) / "unused.sock")
+        self.adapter.live = live
+        live.call = AsyncMock()
+        live.queue_notification({"method": "thread/status/changed", "params": {
+            "threadId": self.session.codex_thread, "status": {"type": "active"},
+        }})
+        await self.adapter.events.catch_up(self.session)
+        live.call.assert_not_called()
+        self.assertTrue(self.session.delivery_failed)
+
+    async def test_catchup_does_not_advance_the_card_to_a_newer_running_turn(self):
+        await self.start()
+        self.adapter.live.call.side_effect = None
+        self.adapter.live.call.return_value = {"data": [{"id": "two", "status": "inProgress"}]}
+        await self.adapter.events.catch_up(self.session)
+        self.assertEqual(self.session.active_turn, "one")
 
     async def test_waiting_and_interruption_are_never_reported_as_done(self):
         await self.start()

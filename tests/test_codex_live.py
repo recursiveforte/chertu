@@ -92,6 +92,11 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
             await self.server_socket.send_json({"method": method, "params": {"threadId": "first"}})
             event = await asyncio.wait_for(self.client.notifications.get(), 1)
             self.assertEqual(event["method"], method)
+            self.assertTrue(self.client.has_pending_notifications("first"))
+            self.assertFalse(self.client.has_pending_notifications("second"))
+            self.client.notification_handled(event)
+            self.client.notifications.task_done()
+            self.assertFalse(self.client.has_pending_notifications("first"))
         await self.server_socket.send_json(
             {"method": "item/reasoning/textDelta", "params": {"delta": "private"}}
         )

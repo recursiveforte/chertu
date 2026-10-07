@@ -97,6 +97,18 @@ class CodexEvents:
         self.backend.store.save()
 
     async def handle_live_event(self, event):
+        try:
+            await self._dispatch_live_event(event)
+        finally:
+            handled = getattr(self.backend.live, "notification_handled", None)
+            if handled:
+                handled(event)
+
+    def notifications_pending(self, session):
+        pending = getattr(self.backend.live, "has_pending_notifications", None)
+        return pending is not None and pending(session.codex_thread)
+
+    async def _dispatch_live_event(self, event):
         if event["method"] == "chert/disconnected":
             for session in list(self.backend.store.sessions.values()):
                 if session.backend != "app-server" or session.status in {"ended", "disconnected"}:
@@ -139,6 +151,16 @@ class CodexEvents:
         if session and session.status == "ended":
             return
         if session:
+            turn_id = params.get("turnId")
+            completed_item = bool(turn_id) and (
+                f"completed:{turn_id}" in session.seen_live_items
+                or turn_id in session.mirrored_turns
+            )
+            if completed_item and event["method"] in {
+                "item/started", "item/agentMessage/delta",
+                "item/reasoning/summaryTextDelta", "turn/plan/updated",
+            }:
+                return
             if event["method"] in {"turn/started", "turn/completed"}:
                 self.backend.reactions.observe_turn(session, params["turn"])
                 await self.backend.reactions.sync(session)
@@ -158,7 +180,8 @@ class CodexEvents:
                 turn = params["turn"]
                 if f"completed:{turn['id']}" in session.seen_live_items:
                     return
-                self.begin_activity(session, turn["id"], turn.get("startedAt"))
+                if not self.begin_activity(session, turn["id"], turn.get("startedAt")):
+                    return
                 await self.update_live_status(session)
                 return
             if event["method"] == "turn/completed":
@@ -330,7 +353,11 @@ class CodexEvents:
                         tool_id=key,
                         error=item.get("exitCode") not in (None, 0),
                     )
-                if item.get("type") == "agentMessage":
+                if (
+                    item.get("type") == "agentMessage"
+                    and not completed_item
+                    and session.activity.get("turn_id") == params.get("turnId")
+                ):
                     upstream.update_card(
                         {"card": session.activity},
                         [{"kind": "assistant", "text": item.get("text", "")}],
@@ -344,6 +371,14 @@ class CodexEvents:
             ):
                 # Native idle can precede turn/completed. Only that event (or the
                 # history reconciliation) can collapse a working card to "done".
+                return
+            if (
+                event["method"] == "thread/status/changed"
+                and params["status"].get("type") == "active"
+                and not session.active_turn
+            ):
+                # Native queues emit active before turn/started. It belongs to
+                # the next turn, not the card we just finalized.
                 return
         if session is None:
             return
@@ -393,6 +428,8 @@ class CodexEvents:
             self.backend.store.save()
 
     def begin_activity(self, session, turn_id, started=None):
+        if f"completed:{turn_id}" in session.seen_live_items or turn_id in session.mirrored_turns:
+            return False
         if session.activity.get("turn_id") != turn_id:
             session.turn_started = started or time.time()
             session.activity = {
@@ -404,6 +441,7 @@ class CodexEvents:
             session.status_message = None
         session.active_turn, session.status = turn_id, "running"
         self.backend.store.save()
+        return True
 
     async def update_live_status(self, session):
         if session.muted:
@@ -587,6 +625,8 @@ class CodexEvents:
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
             if session.status == "ended":
                 return
+            if self.notifications_pending(session):
+                return
             previous_status = session.status
             page = await self.backend.live.call(
                 "thread/turns/list",
@@ -597,9 +637,12 @@ class CodexEvents:
                     "itemsView": "notLoaded",
                 },
             )
+            if self.notifications_pending(session):
+                return  # Notifications arriving during the read take precedence.
             turn = next(iter(page.get("data", [])), None)
             if turn and turn["status"] == "inProgress":
-                self.begin_activity(session, turn["id"], turn.get("startedAt"))
+                if not self.begin_activity(session, turn["id"], turn.get("startedAt")):
+                    return
                 if live_status(info) == "waiting":
                     session.status = "waiting"
             elif turn and (
@@ -634,6 +677,10 @@ class CodexEvents:
         async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
             if session.status == "ended":
                 return
+            if self.notifications_pending(session):
+                session.delivery_failed = True
+                self.backend.store.save()
+                return
             if not session.mirror_since:
                 session.mirror_since = discord.utils.snowflake_time(
                     session.discord_thread
@@ -658,10 +705,13 @@ class CodexEvents:
                             "cursor": cursor,
                         },
                     )
+                    if self.notifications_pending(session):
+                        session.delivery_failed = True
+                        self.backend.store.save()
+                        return
                     reached_checkpoint = False
                     for turn in page["data"]:
                         if turn["status"] == "inProgress":
-                            session.active_turn = turn["id"]
                             continue
                         timestamp = turn.get("completedAt") or turn.get("startedAt") or 0
                         if not timestamp:

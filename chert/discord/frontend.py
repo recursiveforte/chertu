@@ -15,7 +15,6 @@ from chert.paths import runtime_path
 from chert.projects import ProjectStore
 from chert.discord.projects import ProjectCommands
 from chert.discord.audio import AudioMessage, Transcriber, prepare_audio
-from chert.discord.bursts import ProjectPromptBursts
 from chert.backends.base import Harness
 from chert.backends.codex.backend import CodexBackend
 from chert.backends.claude import ClaudeBackend
@@ -35,7 +34,6 @@ class Frontend(upstream.Bridge):
         self.project_lock = asyncio.Lock()
         self.project_channels = {}
         self.transcriber = Transcriber()
-        self.project_prompt_bursts = ProjectPromptBursts()
         upstream.CHANNEL_ID = 0
         upstream.PROJECT_ROOT = config.project_root
         super().__init__(intents=self.intents_for_bot())
@@ -301,7 +299,6 @@ class Frontend(upstream.Bridge):
                     content = content.replace(mention, "")
                 content = content.strip()
                 harness = project.harness
-                explicit = False
                 for prefix, selected in (
                     ("!codex ", "codex"),
                     ("!astra ", "codex"),
@@ -309,16 +306,11 @@ class Frontend(upstream.Bridge):
                 ):
                     if content.startswith(prefix):
                         harness, content = selected, content[len(prefix) :].strip()
-                        explicit = True
                         break
                 else:
                     if content.startswith("!"):
                         return await self.backends[harness].message(message)
                 try:
-                    if explicit:
-                        return await self.launch_project_message(
-                            project, harness, message, content, force_new=True
-                        )
                     return await self.launch_project_message(project, harness, message, content)
                 except Exception as exc:
                     LOG.exception("Project session launch failed")
@@ -335,20 +327,7 @@ class Frontend(upstream.Bridge):
                     LOG.exception("Session message handling failed")
                     return await self.say(message.channel, f"Could not deliver: {str(exc)[:1500]}")
 
-    async def launch_project_message(self, project, harness, message, prompt, *, force_new=False):
-        key = (project.channel_id, message.author.id)
-        if force_new or harness != "codex":
-            self.project_prompt_bursts.forget(key)
-            return await self.deliver_project_prompt(project, harness, message, prompt)
-        return await self.project_prompt_bursts.deliver(
-            key,
-            lambda: self.deliver_project_prompt(project, harness, message, prompt),
-            lambda thread: self.deliver_project_prompt(
-                project, harness, message, prompt, thread=thread
-            ),
-        )
-
-    async def deliver_project_prompt(self, project, harness, message, prompt, *, thread=None):
+    async def launch_project_message(self, project, harness, message, prompt):
         message = await prepare_audio(message, self.transcriber)
         if isinstance(message, AudioMessage):
             prompt = "\n\n".join(part for part in (prompt, message.transcript_text) if part)
@@ -356,13 +335,6 @@ class Frontend(upstream.Bridge):
         prompt = "\n".join(part for part in (prompt, attached) if part)
         if not prompt:
             return
-        if thread is not None:
-            if isinstance(message, AudioMessage):
-                await message.publish(thread)
-            await self.codex.say(thread, f"-# 🧑 {prompt}")
-            # Keep the original channel/message identity for lifecycle reactions.
-            await self.codex.send_prompt(thread, prompt, source=message)
-            return thread
         return await self.backends[harness].launch(
             project,
             prompt,
@@ -387,7 +359,6 @@ class Frontend(upstream.Bridge):
                     self.project_sessions(project), allowed_mentions=upstream.NO_PING
                 )
             if name in {"claude", "codex", "astra", "worktree", "no-worktree"}:
-                self.project_prompt_bursts.forget((project.channel_id, interaction.user.id))
                 await interaction.response.defer(thinking=True)
 
                 async def respond(text):

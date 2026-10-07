@@ -21,7 +21,7 @@ shared rendering; the current product intentionally uses project channels.
 | `/worktrees [enabled]` | Views/changes the durable per-project default for fresh Git worktrees, shown in the channel topic; defaults to off |
 | `/worktree prompt`, `/no-worktree prompt` | Starts a new session with the project harness, overriding the workspace default once |
 | `/archive`, `/unarchive` | Moves the project channel between `projects` and `archived` |
-| Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree; rapid Codex follow-ups from the same author share the first thread |
+| Plain prompts | Opens a message-attached thread in the project directory or a fresh worktree, following its default |
 | Codex prompt reactions | Native queue: ↪️ waiting, 👀 running, ✅ completed; ❌ failed/interrupted/removed |
 | Click ↪️ on a queued Codex prompt | Authorized users send that prompt into the active turn; its reaction becomes 👀, then ✅ on completion |
 | Voice messages/audio uploads | OpenAI speech transcription; recognized text is posted in the session thread before prompt delivery |
@@ -87,19 +87,6 @@ setup and from Discord uses one implementation.
 
 ## Verification and limits
 
-Rapid Codex project-channel prompts are grouped per project and author while
-delivery is pending or within five seconds of the previous message. Each prompt
-retains its source-message reactions and enters the same native queue in arrival
-order. Explicit harness launches start separate sessions. Regression tests cover
-overlapping launches, slow audio and attachments, the time window, separate users
-and projects, explicit launches, failed startup/retry, and existing-thread routing.
-These use mocked Discord and Codex calls; production Discord burst delivery has
-not been exercised. `tests/live_codex_activity.py --bursts` additionally checks
-one native conversation and three FIFO completions with an in-memory Discord sink.
-That isolated native check passed on 2026-10-07, including completion reactions
-for all three original project-channel messages. The production daemon and
-existing conversations were untouched.
-
 Per-project worktrees are a fork extension. Regression checks use real temporary
 Git repositories to verify unique branches, concurrent isolation, dirty source
 preservation, subdirectory projects, non-Git errors, persistence, and project
@@ -163,6 +150,18 @@ Discord events and reaction calls were simulated; inference and queue operations
 used the isolated real daemon. Unit tests additionally cover authorization,
 concurrent clicks, missing queue entries, rejected/ambiguous delivery, and restart
 reconciliation using the acknowledged turn ID when history omits a steering client ID.
+
+Activity cards follow ordered native turn events. Queue acceptance and the socket
+reader's newer active-turn cache do not advance the displayed turn. An `active`
+thread status before the next `turn/started` cannot reopen the preceding completed
+card. Discovery and history recovery defer while that conversation has pending
+notifications, including a notification already taken by the consumer.
+Regression tests reproduce stale working cards, premature turn switches, late
+progress events, and discovery/history races. On 2026-10-07,
+`tests/live_codex_activity.py --rapid-queue` passed with five rapid prompts in one
+isolated native conversation, delayed in-memory Discord delivery, and concurrent
+discovery: five FIFO replies, five finalized cards, no leftover working previews,
+and five completion reactions. Production Discord delivery was not exercised.
 
 Claude remains intentionally disabled in production unless explicitly enabled.
 Claude routing/adoption tests do not establish live Claude inference. S3 tests use

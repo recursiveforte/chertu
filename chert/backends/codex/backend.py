@@ -300,14 +300,12 @@ class CodexBackend:
             if entry:
                 entry["emoji"] = result
                 await self.reactions.sync(session)
-            session.status = "running"
+            # Queue acceptance is not a turn transition. The socket reader may
+            # already be several turns ahead of Discord's ordered event handler.
+            # Only lifecycle events (or idle reconciliation) advance the card.
             session.service_tier = None
             session.collaboration_mode = None
             self.store.save()
-            turn_id = getattr(self.live, "active_turns", {}).get(session.codex_thread)
-            if turn_id and turn_id not in getattr(self.live, "completed_turns", set()):
-                self.events.begin_activity(session, turn_id)
-                await self.events.update_live_status(session)
         return result
 
     async def save_attachments(self, message):
