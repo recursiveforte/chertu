@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
 import os
+import re
 from pathlib import Path
 
 import discord
@@ -210,6 +211,14 @@ class Frontend(upstream.Bridge):
             "Project frontend online: %s projects in guild %s",
             len(self.projects.projects),
             self.projects.guild_id,
+        )
+
+    async def post_as(self, channel, name, content, thread_id=None, seed=None):
+        # Session/project titles can contain Discord's reserved username text.
+        # Adapt only the webhook identity; keep stored titles and avatar seeds.
+        display_name = re.sub("discord", "chat", name, flags=re.IGNORECASE)
+        return await super().post_as(
+            channel, display_name, content, thread_id, seed=seed or name
         )
 
     async def poll_loop(self):

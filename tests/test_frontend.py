@@ -55,6 +55,31 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(type(self.bot).dispatch, discord.Client.dispatch)
         self.bot.dispatch("socket_event_type", "READY")
 
+    async def test_webhook_usernames_allow_session_and_project_titles_with_discord(self):
+        hook = SimpleNamespace(send=AsyncMock())
+        self.bot.webhook_for = AsyncMock(return_value=hook)
+        for name, expected in (
+            ("chert · fix-discord-bot", "chert · fix-chat-bot"),
+            ("Discord-tools · DISCORD-error", "chat-tools · chat-error"),
+            ("chert · ordinary-session", "chert · ordinary-session"),
+            ("x" * 70 + "discord-more", "x" * 70 + "chat-m"),
+        ):
+            with self.subTest(name=name), patch.object(upstream, "avatar_bytes", return_value=None):
+                result = await self.bot.post_as(self.bot.main_channel, name, "reply", 300)
+                sent = hook.send.call_args.kwargs
+                self.assertEqual(sent["username"], expected)
+                self.assertEqual(sent["content"], "reply")
+                self.assertEqual(sent["thread"].id, 300)
+                self.assertEqual(sent["avatar_url"], upstream.avatar_url(name))
+                self.assertIs(result, hook.send.return_value)
+
+    async def test_sanitized_webhook_username_preserves_explicit_avatar_seed(self):
+        hook = SimpleNamespace(send=AsyncMock())
+        self.bot.webhook_for = AsyncMock(return_value=hook)
+        with patch.object(upstream, "avatar_bytes", return_value=None):
+            await self.bot.post_as(self.bot.main_channel, "discord", "reply", seed="native-id")
+        self.assertEqual(hook.send.call_args.kwargs["avatar_url"], upstream.avatar_url("native-id"))
+
     async def test_model_name_is_optional_in_discord_schema_and_argument_parser(self):
         command = self.bot.tree.get_command("model")
         option = command.to_dict(self.bot.tree)["options"][0]

@@ -42,6 +42,10 @@ setup and from Discord uses one implementation.
 - Project directory matching for discovery, with the most specific match winning.
 - Per-session webhook identities, upstream message formatting, attachments, and
   `hearth-send` file delivery.
+  The frontend replaces case-insensitive `discord` with `chat` in outgoing
+  webhook usernames to prevent Discord's reserved-name HTTP 400 errors. Session
+  titles and avatar seeds are preserved. Regression tests exercise the outgoing
+  webhook payload; they do not send test messages to production Discord.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
 - Native approval/input controls. Approval identities are connection-scoped and
