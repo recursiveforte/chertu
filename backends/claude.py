@@ -1,5 +1,6 @@
 """Claude adapter: delegate behavior to the unmodified upstream implementation."""
 import re
+from types import SimpleNamespace
 
 import discord_bot as upstream
 
@@ -12,6 +13,18 @@ class ClaudeBackend:
 
     async def start(self):
         await upstream.Bridge.setup_hook(self.frontend)
+
+    async def adopt_attached(self, session, message):
+        """Reuse upstream's registration/recovery logic with a message-owned thread."""
+        async def create_thread(**kwargs):
+            kwargs.pop('type', None)  # Message.create_thread derives its type from the parent.
+            return await message.create_thread(**kwargs)
+
+        parent = SimpleNamespace(id=message.channel.id, create_thread=create_thread)
+        # The source message already announces the session. Upstream's adopter
+        # needs only thread lookup when reusing a prior mapping; skip its extra announcement.
+        host = SimpleNamespace(get_thread=self.frontend.get_thread, main_channel=None)
+        return await upstream.Bridge.adopt_session(host, session, parent, {'spawned': True})
 
     async def message(self, message):
         host = self.frontend

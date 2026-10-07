@@ -14,15 +14,17 @@ import discord
 import discord_bot as upstream
 from backends import codex_storage
 from backends.codex_terminal import CodexTerminal
-from codex_backend import Session, project_path
-from codex_bot import CodexBot
-from codex_live import RpcError
-from codex_presentation import prompt_name
+from codex_backend import Session
+from backends.codex_runtime import CodexRuntime
+from codex_live import RpcError, live_status
+from codex_presentation import prompt_name, speaker_name
 
 LOG = logging.getLogger(__name__)
+TOOL_NAMES = {'commandExecution': 'Bash', 'fileChange': 'Edit', 'mcpToolCall': 'MCP',
+              'webSearch': 'WebSearch', 'collabAgentToolCall': 'Agent'}
 
 
-class CodexChannel(CodexBot):
+class CodexChannel(CodexRuntime):
     @property
     def main_channel(self):
         project = getattr(self.frontend, 'current_project', None)
@@ -34,20 +36,15 @@ class CodexChannel(CodexBot):
     def main_channel(self, channel):
         self._main_channel = channel
 
-    def __init__(self, config, runner, store, frontend):
-        self.frontend = frontend
-        super().__init__(config, runner, store, register_commands=False)
+    def __init__(self, config, options, store, frontend):
+        super().__init__(frontend, config, options, store)
         self.broadcast_channel = self.chat_channel = None
         self.chat_log = Path(os.environ.get('CODEX_CHAT_LOG') or Path.home()/'shared/codex_chat/msgs.jsonl')
         self.round_lock = asyncio.Lock()
         self.hub_sinks = set()
-        self.terminal = CodexTerminal(runner.binary, self.live.socket)
+        self.terminal = CodexTerminal(options.binary, self.live.socket)
         self.event_locks = {}
         self.card_locks = {}
-
-    def bind_gateway(self):
-        self._connection = self.frontend._connection
-        self.http, self.loop = self.frontend.http, self.frontend.loop
 
     async def wait_until_ready(self):
         await self.frontend.wait_until_ready()
@@ -87,10 +84,12 @@ class CodexChannel(CodexBot):
             return user_id == self.owner or user_id in self.config.allowed_users
         if channel and channel.id in {getattr(self.broadcast_channel, 'id', None), getattr(self.chat_channel, 'id', None)}:
             return user_id == self.owner or user_id in self.config.allowed_users
-        return super().allowed(user_id, channel)
+        in_scope = channel is not None and (
+            channel.id == self.config.channel_id or getattr(channel, 'parent_id', None) == self.config.channel_id)
+        return bool(in_scope and (user_id == self.owner or user_id in self.config.allowed_users))
 
     async def shutdown(self):
-        tasks = self.background_tasks + list(self.workers.values())
+        tasks = self.background_tasks
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -117,7 +116,7 @@ class CodexChannel(CodexBot):
         session = self.store.sessions.get(getattr(channel, 'id', None))
         if session is None:
             return await self.frontend.say(channel, str(text))
-        name = upstream.webhook_name({'project': Path(session.cwd).name, 'name': session.name})
+        name = speaker_name(session)
         entries = upstream.format_new_items([{'kind': 'assistant', 'text': str(text)}], session.codex_thread or '', include_tools=False)
         message = None
         for _, content in entries:
@@ -155,8 +154,8 @@ class CodexChannel(CodexBot):
                 if remaining:
                     raise ValueError(f'Project directory does not exist: {project}')
             cwd = Path(cwd).expanduser().resolve()
-            params = {'cwd': str(cwd), 'approvalPolicy': 'on-request', 'sandbox': self.runner.sandbox,
-                      'config': {'sandbox_workspace_write.network_access': self.runner.network}}
+            params = {'cwd': str(cwd), 'approvalPolicy': 'on-request', 'sandbox': self.options.sandbox,
+                      'config': {'sandbox_workspace_write.network_access': self.options.network}}
             if upstream.PERMISSION_MODE == 'auto':
                 params['approvalsReviewer'] = 'auto_review'
             if self.store.meta.get('yolo_until', 0) > time.time():
@@ -224,13 +223,12 @@ class CodexChannel(CodexBot):
         session = self.store.sessions[thread.id]
         if session.status == 'ended':
             raise ValueError('This session ended. Use /revive or /resume first.')
+        if thread.id in self.stopping:
+            raise ValueError('This session is stopping; try again once it stops.')
         await self.ensure_live(session)
-        # Old exec-created conversations are resumed through the same daemon too.
-        if session.backend == 'exec' and session.codex_thread and thread.id not in self.workers:
-            await self.live.connect()
-            await self.live.attach(session.codex_thread)
-            session.backend = 'app-server'
-        result = await super().send_prompt(thread, prompt)
+        result = '↪️' if await self.live.submit(session, prompt) == 'steered' else '👀'
+        session.status = 'running'
+        self.store.save()
         turn_id = getattr(self.live, 'active_turns', {}).get(session.codex_thread)
         if turn_id:
             async with self.event_locks.setdefault(session.codex_thread, asyncio.Lock()):
@@ -266,8 +264,7 @@ class CodexChannel(CodexBot):
                    'message': {'content': [{'type': 'tool_result', 'tool_use_id': tool_id,
                                             'content': str(text), 'is_error': error}]}}
         else:
-            tool_name = {'commandExecution': 'Bash', 'fileChange': 'Edit', 'mcpToolCall': 'MCP',
-                         'webSearch': 'WebSearch', 'collabAgentToolCall': 'Agent'}.get(kind, kind)
+            tool_name = TOOL_NAMES.get(kind, kind)
             row = {'type': 'assistant', 'timestamp': timestamp,
                    'message': {'content': [{'type': 'tool_use', 'id': key or '', 'name': tool_name,
                                             'input': {'command': str(text)}}]}}
@@ -384,9 +381,7 @@ class CodexChannel(CodexBot):
                     if item.get('id') not in seen:
                         seen.append(item.get('id'))
                         state = {'card': session.activity}
-                        names = {'commandExecution': 'Bash', 'fileChange': 'Edit', 'mcpToolCall': 'MCP',
-                                 'webSearch': 'WebSearch', 'collabAgentToolCall': 'Agent'}
-                        upstream.update_card(state, [{'kind': 'tool', 'name': names[kind],
+                        upstream.update_card(state, [{'kind': 'tool', 'name': TOOL_NAMES[kind],
                             'text': item.get('command') or item.get('query') or item.get('tool', ''),
                             'desc': item.get('description', '')}])
                         session.activity = state['card']
@@ -427,7 +422,33 @@ class CodexChannel(CodexBot):
                 # Native idle can precede turn/completed. Only that event (or the
                 # history reconciliation) can collapse a working card to "done".
                 return
-        await super().handle_live_event(event)
+        if session is None:
+            return
+        if event['method'] == 'item/completed':
+            item = params.get('item') or {}
+            key = f'{params.get("turnId", "")}:{item.get("id", "")}'
+            if item.get('type') != 'agentMessage' or not item.get('text') or key in session.seen_live_items:
+                return
+            await self.say(await self.live_channel(session), item['text'])
+            session.seen_live_items = (session.seen_live_items + [key])[-256:]
+            self.store.save()
+        elif event['method'] == 'turn/completed':
+            turn = params['turn']
+            key = f'completed:{turn["id"]}'
+            if key not in session.seen_live_items:
+                session.seen_live_items = (session.seen_live_items + [key])[-256:]
+                if turn['status'] == 'completed':
+                    session.turns += 1
+            session.active_turn = None
+            session.status = {'failed': 'error', 'interrupted': 'interrupted'}.get(turn['status'], 'idle')
+            if turn.get('error'):
+                await self.say(await self.live_channel(session), f'Codex turn failed: {turn["error"].get("message", "unknown error")}')
+            self.store.save()
+            await self.update_live_status(session)
+        elif event['method'] == 'thread/status/changed':
+            session.status = live_status({'status': params['status']})
+            self.store.save()
+            await self.update_live_status(session)
         if session and event['method'] == 'turn/completed' and not session.delivery_failed and not event.get('reconciled'):
             turn = params['turn']
             session.mirrored_turns = (session.mirrored_turns + [turn['id']])[-1000:]
@@ -566,19 +587,25 @@ class CodexChannel(CodexBot):
                                       args, lambda text: self.say(message.channel, text))
         attached = await self.save_attachments(message) if message.attachments else ''
         if attached:
-            from types import SimpleNamespace
-            message = MessageWithAttachments(message, f'{content}\n{attached}'.strip())
-        return await super().on_message(message)
+            content = f'{content}\n{attached}'.strip()
+        if message.channel.id in self.store.sessions:
+            if content:
+                if message.author.id != self.owner:
+                    content = f'{message.author.display_name}: {content}'
+                reaction = await self.send_prompt(message.channel, content)
+                await message.add_reaction(reaction)
+        elif message.channel.id == self.config.channel_id:
+            prompt = re.sub(rf'<@!?{self.frontend.user.id}>', '', content).strip()
+            if prompt:
+                await self.launch_message(message, prompt)
 
     async def ensure_live(self, session):
         await self.live.connect()
-        if session.discord_thread in self.workers:
-            raise ValueError('This older exec turn is still running. Stop it or wait before using this control.')
         if not session.codex_thread:
             async with self.session_creation_lock:
                 if not session.codex_thread:
                     result = await self.live.call('thread/start', {'cwd': session.cwd,
-                        'approvalPolicy': 'on-request', 'sandbox': self.runner.sandbox})
+                        'approvalPolicy': 'on-request', 'sandbox': self.options.sandbox})
                     session.codex_thread = result['thread']['id']
                     self.live.subscribed.add(session.codex_thread)
                     session.backend = 'app-server'
@@ -598,20 +625,31 @@ class CodexChannel(CodexBot):
 
     async def stop(self, thread, end=False):
         session = self.store.sessions[thread.id]
-        if session.backend == 'app-server':
+        if thread.id in self.stopping:
+            raise ValueError('This session is already stopping.')
+        self.stopping.add(thread.id)
+        try:
+            await self.ensure_live(session)
             await self.live.interrupt(session.codex_thread)
             deadline = time.monotonic() + 15
             while await self.live.active_turn(session.codex_thread):
                 if time.monotonic() >= deadline:
                     raise ValueError('Codex has not finished interrupting this turn yet. Try again shortly.')
                 await asyncio.sleep(0.2)
-        await super().stop(thread, end=end)
-        if end and session.backend == 'app-server':
-            await self.terminal.close(session)
-            await self.live.call('thread/archive', {'threadId': session.codex_thread})
-            self.live.subscribed.discard(session.codex_thread)
-            session.deadline = None
+            session.status = 'ended' if end else 'idle'
+            if end:
+                session.ended_seen_absent = False
+                session.ended_at = time.time()
+                await self.terminal.close(session)
+                await self.live.call('thread/archive', {'threadId': session.codex_thread})
+                self.live.subscribed.discard(session.codex_thread)
+                session.deadline = None
             self.store.save()
+            await self.say(thread, 'Session ended.' if end else 'Stopped. Reply to continue.')
+            if end:
+                await thread.edit(name=upstream.ended_title(session.name), archived=True)
+        finally:
+            self.stopping.discard(thread.id)
 
     async def execute(self, name, channel, user, args, respond):
         if name in {'model', 'globalmodel', 'fast'} and user.id != self.owner:
@@ -805,7 +843,7 @@ class CodexChannel(CodexBot):
                 value = await self.resolve_model(value)
                 session.pending_settings['model'] = value
             if name == 'effort':
-                from codex_bot import EFFORTS
+                from config import EFFORTS
                 if value not in (*EFFORTS, 'default'):
                     raise ValueError('Choose a supported reasoning effort.')
                 if value == 'default':
@@ -1314,13 +1352,6 @@ def index_row(info):
             'mtime': info.get('updatedAt') or info.get('createdAt') or 0,
             'size': path.stat().st_size if path and path.exists() else 0,
             'where': 'local', 'live': (info.get('status') or {}).get('type') in {'active', 'idle'}}
-
-
-class MessageWithAttachments:
-    def __init__(self, message, content):
-        self.original, self.content, self.attachments = message, content, []
-    def __getattr__(self, name):
-        return getattr(self.original, name)
 
 
 def text_arguments(command, value):

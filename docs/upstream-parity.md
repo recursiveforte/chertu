@@ -36,6 +36,24 @@ The inventory below documents the earlier compatibility frontend and native
 transport behavior. The project-mode changes above supersede its channel,
 project-selection, fleet-command, board and shared-chat descriptions.
 
+## Implementation cleanup (2026-10-06)
+
+Codex now has one native adapter and one session-discovery controller, both using
+the shared frontend's Discord connection. The retired standalone Codex client,
+its separate slash registry, webhook renderer, exec queue and subprocess runner
+have been removed. Existing state schemas remain unchanged; legacy `exec` session
+records still attach to the native app-server without replaying prompts.
+
+Project and compatibility routing share their authorization entrypoints and stop
+command. Setup and `/project` share channel creation and registration. Claude's
+message-attached project launches reuse the pinned upstream session adopter,
+including duplicate-thread prevention and failed-creation cleanup. Project and
+Codex state use the same atomic JSON writer; Codex retains last-good backups.
+
+Tests of the removed standalone/exec implementation were replaced with tests of
+the production native adapter. The pinned upstream bridge and parser are unchanged.
+The isolated activity, project, and model checks exercise the resulting native path.
+
 ## Finding
 
 The earlier Codex fork was **not functionally equivalent** to upstream. Its nine slash commands and separately implemented frontend omitted much of upstream's 34-command surface. Matching the appearance of a thread did not establish functional parity.

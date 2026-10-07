@@ -1,9 +1,9 @@
 """Durable project/channel bindings, independent of either agent harness."""
 from dataclasses import asdict, dataclass
 import json
-import os
 from pathlib import Path
 import re
+from state_io import write_json
 
 
 @dataclass
@@ -34,15 +34,9 @@ class ProjectStore:
         self.projects = {p.name: p for p in (Project(**row) for row in data.get('projects', []))}
 
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix('.tmp')
-        with temp.open('w') as file:
-            json.dump({'guild_id': self.guild_id, 'category_id': self.category_id,
-                       'archive_category_id': self.archive_category_id,
-                       'projects': [asdict(p) for p in self.projects.values()]}, file, indent=2)
-            file.flush()
-            os.fsync(file.fileno())
-        temp.replace(self.path)
+        write_json(self.path, {'guild_id': self.guild_id, 'category_id': self.category_id,
+                   'archive_category_id': self.archive_category_id,
+                   'projects': [asdict(p) for p in self.projects.values()]}, indent=2)
 
     def for_channel(self, channel):
         channel_id = getattr(channel, 'parent_id', None) or getattr(channel, 'id', None)
@@ -68,3 +62,16 @@ class ProjectStore:
         if any(p.directory == str(path) for p in self.projects.values()):
             raise ValueError('That directory already has a project channel.')
         return name, str(path)
+
+    def prepare(self, name, directory, root, harness='codex'):
+        name, directory = self.validate(name, directory, root)
+        return Project(name, directory, 0, harness)
+
+
+async def create_project_channel(store, project, guild, category):
+    """Use one channel-creation and persistence path for setup and /project."""
+    channel = await guild.create_text_channel(project.name, category=category, topic=project.topic)
+    project.channel_id = channel.id
+    store.projects[project.name] = project
+    store.save()
+    return channel

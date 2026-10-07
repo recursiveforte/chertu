@@ -13,15 +13,16 @@ from pathlib import Path
 import discord
 
 import discord_bot as upstream
-from codex_backend import CodexRunner, SessionStore
-from codex_bot import Config
+from config import CodexOptions
+from codex_backend import SessionStore
+from config import Config
 
 LOG = logging.getLogger(__name__)
 UPSTREAM_COMMIT = '0bd0902468437823863c2a38ddd5c7e01c9a61bd'
 
 
 class SharedFrontend(upstream.Bridge):
-    def __init__(self, codex_config, runner, store, claude_channel_id):
+    def __init__(self, codex_config, options, store, claude_channel_id):
         self.claude_channel_id = claude_channel_id
         self.claude_enabled = bool(claude_channel_id) and os.environ.get('CLAUDE_ENABLED', '1') != '0'
         upstream.CHANNEL_ID = claude_channel_id
@@ -29,7 +30,7 @@ class SharedFrontend(upstream.Bridge):
         super().__init__(intents=self.intents_for_bot())
         from backends.codex import CodexChannel
         from backends.claude import ClaudeBackend
-        self.codex = CodexChannel(codex_config, runner, store, self)
+        self.codex = CodexChannel(codex_config, options, store, self)
         self.claude = ClaudeBackend(self)
         self.original_commands = {c.name: c.callback for c in self.tree.get_commands()}
         self.install_routes()
@@ -59,7 +60,6 @@ class SharedFrontend(upstream.Bridge):
 
     async def setup_hook(self):
         # Attach transports only after the host's asyncio/HTTP state is initialized.
-        self.codex.bind_gateway()
         await self.codex.start_backend()
         self.owner = self.codex.owner
         if self.claude_channel_id:
@@ -240,6 +240,9 @@ class SharedFrontend(upstream.Bridge):
             return
         if not self.allowed_user(message.author):
             return
+        return await self.route_message(message)
+
+    async def route_message(self, message):
         backend = self.backend_for(message.channel)
         if backend == 'codex':
             try:
@@ -313,9 +316,9 @@ class SharedFrontend(upstream.Bridge):
 
         @self.tree.command(name='stop', description='Interrupt the active turn without ending the conversation')
         async def stop(interaction: discord.Interaction):
-            if self.backend_for(interaction.channel) == 'codex':
-                return await self.dispatch_command('stop', None, interaction, {})
-            return await self.original_commands['key'](interaction, key='esc')
+            name = 'stop' if self.backend_for(interaction.channel) == 'codex' else 'key'
+            await self.dispatch_command(name, self.original_commands.get(name), interaction,
+                                        {} if name == 'stop' else {'key': 'esc'})
 
         @self.tree.error
         async def error(interaction, exc):
@@ -329,6 +332,9 @@ class SharedFrontend(upstream.Bridge):
     async def dispatch_command(self, name, original, interaction, kwargs):
         if not self.allowed_user(interaction.user):
             return await interaction.response.send_message('This Chert instance is restricted.', ephemeral=True)
+        return await self.route_command(name, original, interaction, kwargs)
+
+    async def route_command(self, name, original, interaction, kwargs):
         backend = self.backend_for(interaction.channel)
         if name in {'codex', 'astra'}:
             backend = 'codex'
@@ -430,12 +436,7 @@ def main():
     project_mode = bool(os.environ.get('DISCORD_GUILD_ID'))
     if not project_mode and (claude_id == config.channel_id or (not claude_id and os.environ.get('CHERT_BACKEND', 'both') == 'both')):
         raise SystemExit('Run setup_discord.py --backend both to configure distinct #codex and #claude channels.')
-    import shutil
-    binary = os.environ.get('CODEX_BIN') or shutil.which('codex') or str(Path.home() / '.local/bin/codex')
-    runner = CodexRunner(binary, os.environ.get('CODEX_SANDBOX') or 'workspace-write',
-                         float(os.environ.get('CODEX_TURN_TIMEOUT') or 10800),
-                         Path(os.environ.get('CODEX_LOG_DIR') or 'private/codex-logs'),
-                         os.environ.get('CODEX_NETWORK_ACCESS', '0') == '1')
+    options = CodexOptions.from_env()
     # State remains compatible with both original installations.
     upstream.load_state()
     if upstream.ash_twin is not None:
@@ -454,4 +455,4 @@ def main():
         if project_mode:
             from project_frontend import ProjectFrontend
             frontend = ProjectFrontend
-        frontend(config, runner, SessionStore(config.state_file), claude_id).run(config.token)
+        frontend(config, options, SessionStore(config.state_file), claude_id).run(config.token)

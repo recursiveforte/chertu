@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from codex_backend import CodexRunner, Session, SessionStore
-from codex_bot import Config
-from codex_live import LiveCodex
+from config import CodexOptions
+from codex_backend import Session, SessionStore
+from config import Config
 from shared_frontend import SharedFrontend
 
 
@@ -73,7 +73,7 @@ async def check_projects(root, config, consumer_factory):
     projects.guild_id = 1
     projects.projects['work'] = Project('work', str(config.project_root), 100)
     projects.save()
-    frontend = ProjectFrontend(config, CodexRunner(), SessionStore(config.state_file), projects=projects)
+    frontend = ProjectFrontend(config, CodexOptions(), SessionStore(config.state_file), projects=projects)
     frontend.owner = frontend.codex.owner = 7
     frontend._connection.user = SimpleNamespace(id=999)
     parent = SimpleNamespace(id=100, parent_id=None, edit=AsyncMock())
@@ -169,7 +169,7 @@ async def main(model_check=False, project_check=False):
                             adapter.live.notifications.task_done()
                 await check_projects(root, config, consume_project)
                 return
-            frontend = SharedFrontend(config, CodexRunner(), SessionStore(config.state_file), 0)
+            frontend = SharedFrontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
             live = adapter.live
             await live.connect()

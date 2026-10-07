@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from dotenv import dotenv_values
-from projects import Project, ProjectStore
+from projects import ProjectStore, create_project_channel
 
 try:
     import discord
@@ -25,56 +25,8 @@ except ImportError:
 
 HERE = Path(__file__).resolve().parent
 ENV = HERE / ".env"
-CLAUDE_CHANNELS = [
-    ("claudes", "DISCORD_CHANNEL_ID",
-     "🔭 chert's signalscope — one thread per live claude on the box. Reply in a thread to talk to that "
-     "claude; /claude <prompt> or @chert to launch one; !help for everything."),
-    ("claude-chat", "DISCORD_CHAT_CHANNEL_ID",
-     "two-way bridge to the claude↔claude bus (cchat.py) — type here to talk to all listening claudes"),
-    ("all-claudes", "DISCORD_BROADCAST_CHANNEL_ID",
-     "🧠 ask EVERY claude at once: a plain message is fanned out, replies are collected and a summarizer "
-     "claude answers here. Reply to it / !hub for follow-ups. !all <msg> = plain broadcast."),
-]
-CODEX_CHANNELS = [
-    ('codex', 'DISCORD_CHANNEL_ID',
-     'Chert · type a prompt here to start a session. Existing Codex sessions appear automatically; reply in their threads to talk to them.'),
-]
-SHARED_CHANNELS = [
-    ('codex', 'DISCORD_CODEX_CHANNEL_ID', CODEX_CHANNELS[0][2]),
-    ('claude', 'DISCORD_CLAUDE_CHANNEL_ID',
-     'Chert · type a prompt to start Claude. Reply in a session thread to continue.'),
-    ('all-codex', 'DISCORD_CODEX_BROADCAST_CHANNEL_ID',
-     'Ask all Codex sessions; Chert collects their replies and summarizes them. !all sends without a summary.'),
-    ('codex-chat', 'DISCORD_CODEX_CHAT_CHANNEL_ID', 'Shared Codex session chat bus.'),
-    *CLAUDE_CHANNELS[1:],
-]
-
-
-def channels_for(backend):
-    if backend == 'both':
-        return SHARED_CHANNELS
-    if backend not in {'codex', 'claude'}:
-        raise ValueError('Backend must be both, codex, or claude')
-    return CODEX_CHANNELS if backend == 'codex' else CLAUDE_CHANNELS
-
-
 def read_env():
     return dict(dotenv_values(ENV)) if ENV.exists() else {}
-
-
-def existing_channel(guild, category, name, key, env):
-    """Configured IDs outrank names/categories: users may reorganize their server."""
-    channel_id = env.get(key)
-    if not channel_id and key == 'DISCORD_CODEX_CHANNEL_ID' and env.get('DISCORD_CHANNEL_ID'):
-        legacy = guild.get_channel(int(env['DISCORD_CHANNEL_ID']))
-        if isinstance(legacy, discord.TextChannel) and legacy.name == 'codex':
-            channel_id = legacy.id
-    if channel_id:
-        channel = guild.get_channel(int(channel_id))
-        if not isinstance(channel, discord.TextChannel):
-            raise ValueError(f'Configured {key} is missing or inaccessible; update the ID before provisioning.')
-        return channel
-    return discord.utils.get(category.text_channels, name=name)
 
 
 def write_env(updates):
@@ -140,11 +92,8 @@ async def provision_projects(guild, env, reset=False, initial_projects=()):
     validator = copy(store)
     validator.projects = dict(store.projects)
     for name, directory in seeds:
-        name, directory = validator.validate(name, directory, root)
-        project = Project(name, directory, 0, env.get('DEFAULT_HARNESS') or 'codex')
-        if project.harness not in {'codex', 'claude'}:
-            raise ValueError('DEFAULT_HARNESS must be codex or claude.')
-        validator.projects[name] = project
+        project = validator.prepare(name, directory, root, env.get('DEFAULT_HARNESS') or 'codex')
+        validator.projects[project.name] = project
         planned.append(project)
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -215,10 +164,8 @@ async def provision_projects(guild, env, reset=False, initial_projects=()):
         channel = guild.get_channel(project.channel_id) if project.channel_id else None
         if channel is None:
             category = categories['archived' if project.archived else 'projects']
-            channel = await guild.create_text_channel(project.name, category=category, topic=project.topic)
-            project.channel_id = channel.id
+            channel = await create_project_channel(store, project, guild, category)
             print(f'  created project #{project.name} ({channel.id})')
-            store.save()
     updates = {'DISCORD_GUILD_ID': str(guild.id), 'CHERT_BACKEND': env.get('CHERT_BACKEND') or 'both',
                'DISCORD_OWNER_ID': str(env.get('DISCORD_OWNER_ID') or guild.owner_id),
                'PROJECT_STATE_FILE': json.dumps(str(store.path))}

@@ -9,19 +9,19 @@ from pathlib import Path
 import discord
 
 import discord_bot as upstream
-from projects import Project, ProjectStore
+from projects import ProjectStore, create_project_channel
 from shared_frontend import SharedFrontend
 
 LOG = logging.getLogger(__name__)
 
 
 class ProjectFrontend(SharedFrontend):
-    def __init__(self, config, runner, store, claude_channel_id=0, projects=None):
+    def __init__(self, config, options, store, claude_channel_id=0, projects=None):
         self.projects = projects or ProjectStore(os.environ.get('PROJECT_STATE_FILE') or 'private/projects.json')
         self._project_context = ContextVar('chert_project', default=None)
         self.project_lock = asyncio.Lock()
         self.project_channels = {}
-        super().__init__(config, runner, store, claude_channel_id)
+        super().__init__(config, options, store, claude_channel_id)
         self.claude_enabled = os.environ.get('CLAUDE_ENABLED', '1') != '0'
         self.install_project_commands()
 
@@ -77,7 +77,6 @@ class ProjectFrontend(SharedFrontend):
         self.main_channel = next((self.project_channels[p.channel_id] for p in self.projects.projects.values()
                                   if not p.archived and p.channel_id in self.project_channels),
                                  next(iter(self.project_channels.values()), None))
-        self.codex.bind_gateway()
         await self.codex.start_backend()
         await self.start_hook_server()
         self.tree.copy_global_to(guild=guild)
@@ -125,9 +124,7 @@ class ProjectFrontend(SharedFrontend):
         with self.project_context(project):
             return await super().tick_session(self.main_channel or channel, key, session, saved)
 
-    async def on_message(self, message):
-        if message.author.id == self.user.id or message.webhook_id or not self.allowed_user(message.author):
-            return
+    async def route_message(self, message):
         project = self.projects.for_channel(message.channel)
         if project is None:
             return
@@ -161,7 +158,7 @@ class ProjectFrontend(SharedFrontend):
                 except Exception as exc:
                     LOG.exception('Project session launch failed')
                     return await self.say(message.channel, f'Could not launch: {str(exc)[:1500]}')
-            return await super().on_message(message)
+            return await super().route_message(message)
 
     async def launch_project_message(self, project, harness, message, prompt):
         attached = await self.save_attachments(message)
@@ -188,22 +185,7 @@ class ProjectFrontend(SharedFrontend):
                 return await respond(await self.spawn_failure_text(pane, project.directory, notes))
             # Both launch and discovery use this lock so only one owns thread creation.
             if source:
-                upstream.state[session['key']] = {'pending': True}
-                upstream.save_state()
-                try:
-                    title = upstream.thread_title(session['name'], session['sid'], False)
-                    thread = await source.create_thread(name=title, auto_archive_duration=10080)
-                    intro = await thread.send(upstream.status_line(session), allowed_mentions=upstream.NO_PING)
-                    upstream.state[session['key']] = {
-                        'thread': thread.id, 'parent': project.channel_id, 'status_msg': intro.id,
-                        'size': os.path.getsize(session['transcript']) if session['transcript'] else 0,
-                        'status': session['status'], 'name': session['name'], 'sid': session['sid'],
-                        'cwd': session['cwd'], 'thread_name': title, 'ended': False, 'muted': False, 'spawned': True}
-                    upstream.save_state()
-                except Exception:
-                    upstream.state.pop(session['key'], None)
-                    upstream.save_state()
-                    raise
+                thread = await self.claude.adopt_attached(session, source)
             else:
                 thread = await self.adopt_session(session, self.main_channel, {'spawned': True})
             ok, error = await asyncio.to_thread(self.deliver, session, user, prompt)
@@ -215,9 +197,7 @@ class ProjectFrontend(SharedFrontend):
                 await respond(f'Prompt was not delivered: {error}')
             return thread
 
-    async def dispatch_command(self, name, original, interaction, kwargs):
-        if not self.allowed_user(interaction.user):
-            return await interaction.response.send_message('This Chert instance is restricted.', ephemeral=True)
+    async def route_command(self, name, original, interaction, kwargs):
         project = self.projects.for_channel(interaction.channel)
         if project is None:
             return await interaction.response.send_message('Use this command in a project channel. /project creates one.', ephemeral=True)
@@ -236,7 +216,7 @@ class ProjectFrontend(SharedFrontend):
                     return await self.launch_claude(project, kwargs['prompt'], interaction.user, respond)
                 thread = await self.codex.start_session(kwargs['prompt'])
                 return await respond(f'Codex → {thread.mention}')
-            return await super().dispatch_command(name, original, interaction, kwargs)
+            return await super().route_command(name, original, interaction, kwargs)
 
     def project_sessions(self, project):
         lines = [f'**{project.name}** · default harness: **{project.harness}**']
@@ -277,16 +257,11 @@ class ProjectFrontend(SharedFrontend):
 
     async def create_project(self, name, directory):
         async with self.project_lock:
-            name, directory = self.projects.validate(name, directory, self.codex.config.project_root)
+            project = self.projects.prepare(name, directory, self.codex.config.project_root,
+                                            os.environ.get('DEFAULT_HARNESS') or 'codex')
             category = await self.category()
-            project = Project(name, directory, 0, os.environ.get('DEFAULT_HARNESS') or 'codex')
-            if project.harness not in {'codex', 'claude'}:
-                raise ValueError('DEFAULT_HARNESS must be codex or claude.')
-            channel = await category.guild.create_text_channel(name, category=category, topic=project.topic)
-            project.channel_id = channel.id
-            self.projects.projects[name] = project
+            channel = await create_project_channel(self.projects, project, category.guild, category)
             self.project_channels[channel.id] = channel
-            self.projects.save()
             if self._main_channel is None:
                 self.main_channel = self.codex.main_channel = channel
             return project
@@ -322,14 +297,6 @@ class ProjectFrontend(SharedFrontend):
         # These old harness-wide operations no longer describe the project UI.
         for name in ('all', 'hub', 'restartall', 'reviveall', 'cleanup'):
             self.tree.remove_command(name)
-        self.tree.remove_command('stop')
-
-        @self.tree.command(name='stop', description='Interrupt this session’s active turn')
-        async def stop(interaction: discord.Interaction):
-            name = 'stop' if self.backend_for(interaction.channel) == 'codex' else 'key'
-            await self.dispatch_command(name, self.original_commands.get(name), interaction,
-                                        {} if name == 'stop' else {'key': 'esc'})
-
         @self.tree.command(name='project', description='Create a project channel for a directory on the bot host')
         async def project_command(interaction: discord.Interaction, name: str, dir: str):
             if not await self.project_permission(interaction):

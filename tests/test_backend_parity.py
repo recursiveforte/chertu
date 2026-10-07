@@ -1,14 +1,13 @@
-import asyncio
-import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 import discord
 
-from codex_backend import CodexRunner, Session, SessionStore
-from codex_bot import Config
+from config import CodexOptions
+from codex_backend import Session, SessionStore
+from config import Config
 from shared_frontend import SharedFrontend
 from shared_prompts import request_view
 from backends.codex import text_arguments
@@ -22,7 +21,7 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         cfg = Config('unused', 100, 7, set(), root, root/'state.json')
-        self.host = SharedFrontend(cfg, CodexRunner(), SessionStore(cfg.state_file), 200)
+        self.host = SharedFrontend(cfg, CodexOptions(), SessionStore(cfg.state_file), 200)
         self.host.owner = self.host.codex.owner = 7
         self.host._connection.user = SimpleNamespace(id=999)
         self.adapter = self.host.codex

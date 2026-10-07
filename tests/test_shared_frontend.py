@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -9,9 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 import discord_bot as upstream
 from codex_backend import Session, SessionStore
-from codex_bot import Config
+from config import Config
 from shared_frontend import SharedFrontend
-from setup_discord import channels_for
 
 
 class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
@@ -144,15 +142,11 @@ class SharedFrontendTests(unittest.IsolatedAsyncioTestCase):
             original.assert_not_called()
             interaction.response.send_message.assert_awaited_once()
 
-    def test_both_channels_are_distinct_and_named_as_requested(self):
-        channels = channels_for('both')
-        self.assertEqual(channels[0][:2], ('codex', 'DISCORD_CODEX_CHANNEL_ID'))
-        self.assertEqual(channels[1][:2], ('claude', 'DISCORD_CLAUDE_CHANNEL_ID'))
-
     async def test_binding_does_not_start_another_discord_gateway(self):
-        self.bot.codex.bind_gateway()
-        self.assertIs(self.bot.codex.http, self.bot.http)
-        self.assertIs(self.bot.codex._connection, self.bot._connection)
+        self.assertNotIsInstance(self.bot.codex, discord.Client)
+        self.bot.fetch_channel = AsyncMock(return_value=SimpleNamespace(id=123))
+        self.assertEqual((await self.bot.codex.fetch_channel(123)).id, 123)
+        self.bot.fetch_channel.assert_awaited_once_with(123)
         self.assertIs(self.bot._connection._command_tree, self.bot.tree)
 
     async def test_disabled_claude_never_starts_its_poller(self):

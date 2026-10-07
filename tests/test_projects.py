@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 import discord_bot as upstream
 from codex_backend import Session, SessionStore
-from codex_bot import Config
+from config import Config
 from project_frontend import ProjectFrontend
 from projects import Project, ProjectStore
 import setup_discord
@@ -25,6 +25,7 @@ class ProjectStoreTests(unittest.TestCase):
             store.projects = {'root': Project('root', tmp, 1),
                               'child': Project('child', str(child), 2, 'claude', True)}
             store.save()
+            self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
             loaded = ProjectStore(store.path)
             self.assertEqual(loaded.guild_id, 123)
             self.assertEqual(loaded.for_directory(child / 'src').name, 'child')
@@ -144,6 +145,35 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.dispatch_command('claude', None, interaction, {'prompt': 'hello'})
         self.assertEqual(self.bot.launch_claude.call_args.args[0].channel_id, 100)
         self.assertEqual(self.projects.projects['one'].harness, 'codex')
+
+    async def test_attached_claude_adoption_uses_upstream_registration_and_reuses_existing_thread(self):
+        project = self.projects.projects['one']
+        thread = SimpleNamespace(id=300, send=AsyncMock(return_value=SimpleNamespace(id=500)))
+        source = SimpleNamespace(channel=self.channels[100], create_thread=AsyncMock(return_value=thread))
+        session = {'key': 'process', 'name': 'work', 'sid': 'native', 'transcript': None,
+                   'status': 'idle', 'cwd': project.directory}
+        self.bot.get_thread = AsyncMock(return_value=thread)
+        with patch.dict(upstream.state, {}, clear=True), patch.object(upstream, 'save_state'), \
+             patch.object(upstream, 'status_line', return_value='Ready'):
+            result = await self.bot.claude.adopt_attached(session, source)
+            self.assertIs(result, thread)
+            self.assertEqual(upstream.state['process']['parent'], 100)
+            self.assertEqual(upstream.state['process']['thread'], 300)
+            self.assertTrue(upstream.state['process']['spawned'])
+            self.assertNotIn('type', source.create_thread.call_args.kwargs)
+            self.bot.say.assert_not_called()
+            self.assertIs(await self.bot.claude.adopt_attached(session, source), thread)
+            source.create_thread.assert_awaited_once()
+
+    async def test_failed_attached_claude_thread_releases_upstream_pending_claim(self):
+        response = SimpleNamespace(status=403, reason='Forbidden')
+        source = SimpleNamespace(channel=self.channels[100], create_thread=AsyncMock(
+            side_effect=discord.Forbidden(response, 'Missing permission')))
+        session = {'key': 'process', 'name': 'work', 'sid': 'native'}
+        with patch.dict(upstream.state, {}, clear=True), patch.object(upstream, 'save_state'), \
+             patch.object(upstream, 'log_error'):
+            self.assertIsNone(await self.bot.claude.adopt_attached(session, source))
+            self.assertNotIn('process', upstream.state)
 
     async def test_archive_moves_channel_and_blocks_new_prompts_then_unarchives(self):
         project = self.projects.projects['one']
