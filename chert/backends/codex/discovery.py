@@ -88,14 +88,13 @@ class CodexDiscovery:
                             info["id"],
                             status=live_status(info),
                             backend="app-server",
+                            display_model=info.get("model") or "",
                         )
                         self.backend.store.sessions[thread.id] = session
                         self.backend.store.save()  # Record the mapping before subscribing to notifications.
                         card = await self.backend.say(
                             thread,
-                            f"**Codex · {title}** · `{info['cwd']}`\n"
-                            f"**{session.status}** · Discovered an existing session. Reply here to talk to it; "
-                            "your terminal and Discord share the same conversation.",
+                            activity_text(session, session.status),
                         )
                         session.status_message = card.id
                         session.status_webhook = True

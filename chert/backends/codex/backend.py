@@ -20,7 +20,7 @@ from chert.backends.codex.controls import CodexControls, text_arguments
 from chert.backends.codex.discovery import CodexDiscovery
 from chert.backends.codex.client import RpcError
 from chert.backends.codex.reactions import PromptReactions
-from chert.backends.codex.presentation import prompt_name, speaker_name, thread_title
+from chert.backends.codex.presentation import activity_text, prompt_name, speaker_name, thread_title
 
 LOG = logging.getLogger(__name__)
 
@@ -263,7 +263,7 @@ class CodexBackend:
             if workspace.is_relative_to(projects.worktree_root(destination))
             else workspace.name
         )
-        card = await self.say(thread, f"**{title}** · `{workspace_label}`\nReply to talk · `!help`")
+        card = await self.say(thread, activity_text(session, session.status, workspace=workspace_label))
         session.status_message, session.status_webhook = card.id, True
         self.store.save()
         if prompt:

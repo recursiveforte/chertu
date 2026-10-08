@@ -264,7 +264,7 @@ async def check_rapid_queue(frontend, session, channel, consumer):
         await asyncio.sleep(0.15)  # Discord delivery lags behind the socket reader.
         ident = len(rendered) + 1
         rendered[ident] = text
-        if "**exploring**" in text:
+        if "**working**" in text:
             cards.append(ident)
         return SimpleNamespace(id=ident)
 
@@ -306,7 +306,7 @@ async def check_rapid_queue(frontend, session, channel, consumer):
         assert len(adapter.store.sessions) == 1
         assert len(cards) == 5, f"Expected five cards, got {len(cards)}: {rendered}"
         assert all("✅ turn done" in rendered[ident] for ident in cards), rendered
-        assert all("**exploring**" not in text for text in rendered.values()), rendered
+        assert all("**working**" not in text for text in rendered.values()), rendered
         for ident, source in enumerate(sources, 1):
             assert sum(text.strip() == f"RAPID_REPLY_{ident}" for text in rendered.values()) == 1
             source.add_reaction.assert_awaited_with("✅")
@@ -632,7 +632,7 @@ async def main(
                         if consumer.done():
                             await consumer
                         await asyncio.sleep(0.01)
-                assert any("**exploring**" in m for m in messages), "No immediate working card"
+                assert any("**working**" in m for m in messages), "No immediate working card"
                 print("Immediate working card: PASS", flush=True)
                 async with asyncio.timeout(180):
                     while not session.turns and session.status not in {"error", "interrupted"}:
@@ -644,7 +644,7 @@ async def main(
                 assert any("CHERT_ACTIVITY_DONE" in m for m in messages), "Final reply missing"
                 assert any("turn done" in m for m in edits), "Completion card missing"
                 assert session.activity.get("counts"), "Tool progress missing"
-                working = [m for m in edits if "**exploring**" in m]
+                working = [m for m in edits if "**working**" in m]
                 assert len(working) >= 2, "No working-card heartbeat during command"
                 assert "🔧" in "\n".join(working), "No tool count in visible card"
                 print(

@@ -64,6 +64,12 @@ setup and from Discord uses one implementation.
   not been exercised by these tests; existing posted messages are unchanged.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
+- Codex status cards show session/workspace identity, a relative update timestamp,
+  model, and dashboard/reply/screen/help shortcuts. Waiting for approval or input
+  reads “🔔 needs you”. Tool progress and frozen completion timing are retained.
+  The same layout is used for launch and discovery. Regression checks use an
+  in-memory Discord sink; the screenshot style has not been visually verified
+  in production Discord. Codex does not claim Claude classifier rerouting.
 - Codex thread titles keep the fixed 🚀 prefix; activity changes appear in the
   activity card without renaming the thread. Explicit session names and collision
   suffixes still synchronize, and closing a session uses 🌌. Discovery restores

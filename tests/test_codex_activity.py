@@ -104,7 +104,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_turn_start_renders_working_before_any_model_output(self):
         await self.start()
-        self.assertIn("**exploring**", self.adapter.say.call_args.args[1])
+        self.assertIn("**working**", self.adapter.say.call_args.args[1])
         self.assertIn("0m 30s", self.adapter.say.call_args.args[1])
         self.assertEqual(self.session.status_message, 900)
 
@@ -366,10 +366,10 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
             "thread/status/changed", status={"type": "active", "activeFlags": ["waitingOnApproval"]}
         )
         hook = await self.adapter.webhook_for()
-        self.assertIn("📡 **signal**", hook.edit_message.call_args.kwargs["content"])
+        self.assertIn("🔔 **needs you**", hook.edit_message.call_args.kwargs["content"])
         await self.event("turn/completed", turn={"id": "one", "status": "interrupted"})
         body = hook.edit_message.call_args.kwargs["content"]
-        self.assertIn("⏹ stopped", body)
+        self.assertIn("⏹ **stopped**", body)
         self.assertNotIn("turn done", body)
 
     async def test_attach_mid_turn_restores_working_card_and_original_start(self):
@@ -378,7 +378,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
             "data": [{"id": "one", "status": "inProgress", "startedAt": time.time() - 125}]
         }
         await self.adapter.events.observe_status(self.session, {"status": {"type": "active"}})
-        self.assertIn("**exploring** · 2m 05s", self.adapter.say.call_args.args[1])
+        self.assertIn("**working** · 2m 05s", self.adapter.say.call_args.args[1])
         self.assertEqual(self.session.active_turn, "one")
 
     async def test_missed_completion_repairs_card_and_schedules_reply_recovery(self):
