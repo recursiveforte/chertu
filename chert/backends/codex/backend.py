@@ -9,6 +9,7 @@ import uuid
 import discord
 
 from chert.vendor import bridge as upstream
+from chert.discord.markdown import discord_tables
 from chert.worktrees import session_directory
 from chert.backends.codex import storage as codex_storage
 from chert.backends.codex.terminal import CodexTerminal
@@ -147,7 +148,7 @@ class CodexBackend:
             return await self.frontend.say(channel, str(text))
         name = speaker_name(session)
         entries = upstream.format_new_items(
-            [{"kind": "assistant", "text": str(text)}],
+            [{"kind": "assistant", "text": discord_tables(str(text))}],
             session.codex_thread or "",
             include_tools=False,
         )

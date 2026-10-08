@@ -56,6 +56,12 @@ setup and from Discord uses one implementation.
   webhook usernames to prevent Discord's reserved-name HTTP 400 errors. Session
   titles and avatar seeds are preserved. Regression tests exercise the outgoing
   webhook payload; they do not send test messages to production Discord.
+  Codex replies and bot-voice messages convert Markdown pipe tables to labeled
+  rows before message splitting so long cells wrap in Discord. Headers, inline
+  formatting, links, and cell contents are retained; code examples stay literal.
+  Regression checks cover the screenshot's milestone table, escaped/code pipes,
+  and long replies through an in-memory webhook. Production Discord rendering has
+  not been exercised by these tests; existing posted messages are unchanged.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
 - Codex thread titles keep the fixed 🚀 prefix; activity changes appear in the

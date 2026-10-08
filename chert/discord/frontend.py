@@ -15,6 +15,7 @@ from chert.paths import runtime_path
 from chert.projects import ProjectStore
 from chert.discord.projects import ProjectCommands
 from chert.discord.audio import AudioMessage, Transcriber, prepare_audio
+from chert.discord.markdown import discord_tables
 from chert.backends.base import Harness
 from chert.backends.codex.backend import CodexBackend
 from chert.backends.claude import ClaudeBackend
@@ -225,6 +226,9 @@ class Frontend(upstream.Bridge):
             len(self.projects.projects),
             self.projects.guild_id,
         )
+
+    async def say(self, channel, text, ping_owner=False):
+        return await super().say(channel, discord_tables(str(text)), ping_owner=ping_owner)
 
     async def post_as(self, channel, name, content, thread_id=None, seed=None):
         # Session/project titles can contain Discord's reserved username text.
