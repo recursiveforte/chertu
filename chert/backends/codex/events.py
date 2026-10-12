@@ -437,6 +437,10 @@ class CodexEvents:
         if f"completed:{turn_id}" in session.seen_live_items or turn_id in session.mirrored_turns:
             return False
         if session.activity.get("turn_id") != turn_id:
+            # The launch/discovery card has no turn yet. Reuse it for the first
+            # turn, but leave completed turn cards in the conversation history.
+            if session.activity.get("turn_id"):
+                session.status_message = None
             session.turn_started = started or time.time()
             session.last_interaction_at = max(session.last_interaction_at, session.turn_started)
             session.activity = {
@@ -445,7 +449,6 @@ class CodexEvents:
                 "counts": {},
                 "dirty": True,
             }
-            session.status_message = None
         session.active_turn, session.status = turn_id, "running"
         self.backend.store.save()
         return True

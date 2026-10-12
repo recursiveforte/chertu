@@ -64,6 +64,10 @@ setup and from Discord uses one implementation.
   not been exercised by these tests; existing posted messages are unchanged.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
+  The first turn edits the launch/discovery card in place so it does not leave
+  a stale “ready” card above “working”. Later turns retain separate cards.
+  Regression tests cover initial cards before and after a status refresh, plus
+  completion and subsequent turns; this transition has not been exercised live.
 - Codex status cards show session/workspace identity, a relative update timestamp,
   model, and dashboard/reply/screen/help shortcuts. Waiting for approval or input
   reads “🔔 needs you”. Tool progress and frozen completion timing are retained.

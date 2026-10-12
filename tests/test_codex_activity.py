@@ -256,6 +256,33 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.say.await_count, 2)
         self.assertEqual(self.session.active_turn, "two")
 
+    async def test_first_turn_reuses_initial_card_even_after_status_refresh(self):
+        await self.adapter.events.update_live_status(self.session)
+        self.assertIn("**ready**", self.adapter.say.call_args.args[1])
+        initial_message = self.session.status_message
+        self.adapter.say.reset_mock()
+
+        await self.start()
+        hook = await self.adapter.webhook_for()
+        self.adapter.say.assert_not_called()
+        self.assertEqual(self.session.status_message, initial_message)
+        self.assertEqual(hook.edit_message.call_args.args[0], initial_message)
+        self.assertIn("**working**", hook.edit_message.call_args.kwargs["content"])
+
+        await self.event("turn/completed", turn={"id": "one", "status": "completed"})
+        self.assertIn("**done**", hook.edit_message.call_args.kwargs["content"])
+        await self.start("two")
+        self.adapter.say.assert_awaited_once()
+
+    async def test_first_turn_reuses_unrendered_launch_card(self):
+        self.session.status_message = 800
+        self.session.status_webhook = True
+        await self.start()
+        self.adapter.say.assert_not_called()
+        hook = await self.adapter.webhook_for()
+        self.assertEqual(hook.edit_message.call_args.args[0], 800)
+        self.assertIn("**working**", hook.edit_message.call_args.kwargs["content"])
+
     async def test_next_active_status_does_not_reopen_previous_completed_card(self):
         await self.start()
         await self.event("turn/completed", turn={"id": "one", "status": "completed"})
