@@ -74,7 +74,10 @@ def discord_tables(text):
                             if not (label.startswith("**") and label.endswith("**")):
                                 label = f"**{label}**"
                             fields.append(f"{label}: {value}")
-                        rendered.append("- " + "\n  ".join(fields))
+                        # Discord collapses indented list continuation lines,
+                        # joining adjacent cells without even a space. Keep
+                        # fields on ordinary lines and separate rows by a gap.
+                        rendered.append("\n".join(fields))
                     out.append("\n\n".join(rendered))
                     if lines[end - 1].endswith("\n"):
                         out.append("\n")

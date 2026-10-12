@@ -14,12 +14,29 @@ class DiscordTableTests(unittest.TestCase):
         )
         self.assertEqual(discord_tables(source), (
             "**7. Scale through explicit milestones.**\n\n"
-            "- **Milestone**: Reproducible foundation\n"
-            "  **Required result**: Restore missing artifacts\n\n"
-            "- **Milestone**: Leaf proof\n"
-            "  **Required result**: Actual C-to-machine theorem for one simple function\n\n"
+            "**Milestone**: Reproducible foundation\n"
+            "**Required result**: Restore missing artifacts\n\n"
+            "**Milestone**: Leaf proof\n"
+            "**Required result**: Actual C-to-machine theorem for one simple function\n\n"
             "I would use simple load/store functions."
         ))
+
+    def test_compilation_table_cells_are_not_list_continuations(self):
+        source = (
+            "| Concern | Treatment in the compilation proof |\n|---|---|\n"
+            "| Existing hardware primitives | Match exact binary sites to the existing source interface contracts |\n"
+            "| Interrupt entry, context restore, exception return | Keep their existing boundary explicit |\n\n"
+            "For interrupts specifically, the desired reusable argument is:"
+        )
+        rendered = discord_tables(source)
+        self.assertEqual(rendered, (
+            "**Concern**: Existing hardware primitives\n"
+            "**Treatment in the compilation proof**: Match exact binary sites to the existing source interface contracts\n\n"
+            "**Concern**: Interrupt entry, context restore, exception return\n"
+            "**Treatment in the compilation proof**: Keep their existing boundary explicit\n\n"
+            "For interrupts specifically, the desired reusable argument is:"
+        ))
+        self.assertEqual(discord_tables(rendered), rendered)
 
     def test_optional_outer_pipes_alignment_and_inline_formatting(self):
         source = (
@@ -50,6 +67,6 @@ class DiscordTableTests(unittest.TestCase):
     def test_multiple_tables_and_fence_closure(self):
         source = "```\nexample\n```\nA | B\n--- | ---\nx | y\n\nC | D\n--- | ---\nz | q"
         rendered = discord_tables(source)
-        self.assertIn("```\nexample\n```\n- **A**: x", rendered)
+        self.assertIn("```\nexample\n```\n**A**: x", rendered)
         self.assertTrue(rendered.endswith("**D**: q"))
         self.assertEqual(discord_tables(rendered), rendered)

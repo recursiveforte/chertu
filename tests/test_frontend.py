@@ -135,6 +135,8 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         for i in range(125):
             self.assertIn(f"**Milestone**: Milestone {i}\n", rendered)
         self.assertEqual(rendered.count("**Required result**:"), 125)
+        self.assertNotIn("\n  **Required result**:", rendered)
+        self.assertNotIn("- **Milestone**:", rendered)
         self.assertNotIn("|---|", rendered)
         for call in hook.send.call_args_list:
             self.assertEqual(call.kwargs["thread"].id, 300)
@@ -170,7 +172,7 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
     async def test_bot_voice_tables_are_formatted_before_sending(self):
         channel = SimpleNamespace(send=AsyncMock())
         await self.bot.say(channel, "A | B\n--- | ---\none | two")
-        self.assertEqual(channel.send.call_args.args[0], "- **A**: one\n  **B**: two")
+        self.assertEqual(channel.send.call_args.args[0], "**A**: one\n**B**: two")
 
     async def test_model_name_is_optional_in_discord_schema_and_argument_parser(self):
         command = self.bot.tree.get_command("model")

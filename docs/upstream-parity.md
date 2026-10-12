@@ -87,6 +87,8 @@ mappings were preserved. No Mac project channel was created automatically.
   Codex replies and bot-voice messages convert Markdown pipe tables to labeled
   rows before message splitting so long cells wrap in Discord. Headers, inline
   formatting, links, and cell contents are retained; code examples stay literal.
+  Each cell uses an unindented labeled line, with blank lines between rows:
+  Discord collapsed the former bullet continuation lines into adjacent cells.
   Regression checks cover the screenshot's milestone table, escaped/code pipes,
   and long replies through an in-memory webhook. Production Discord rendering has
   not been exercised by these tests; existing posted messages are unchanged.
