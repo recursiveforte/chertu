@@ -13,9 +13,11 @@ def prompt_name(prompt):
     return upstream.slug(prompt)
 
 
-def thread_title(name, ended=False, *, sid="", collides=False):
+def thread_title(name, ended=False, *, sid="", collides=False, sleeping=False):
     title = upstream.thread_title(name, sid, collides)
-    return upstream.ended_title(title) if ended else title
+    if ended:
+        return upstream.ended_title(title)
+    return title.replace(upstream.LIVE_PREFIX, "💤", 1) if sleeping else title
 
 
 def speaker_name(session):

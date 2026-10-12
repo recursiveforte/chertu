@@ -15,6 +15,8 @@ from chert.vendor import bridge as upstream
 from chert.backends.codex.client import live_status
 
 LOG = logging.getLogger(__name__)
+THREAD_IDLE_SECONDS = 36 * 60 * 60
+
 TOOL_NAMES = {
     "commandExecution": "Bash",
     "fileChange": "Edit",
@@ -182,6 +184,7 @@ class CodexEvents:
                     return
                 if not self.begin_activity(session, turn["id"], turn.get("startedAt")):
                     return
+                await self.update_thread_title(session)
                 await self.update_live_status(session)
                 return
             if event["method"] == "turn/completed":
@@ -195,6 +198,9 @@ class CodexEvents:
                 ):
                     return
                 session.last_completed_at = params["turn"].get("completedAt") or time.time()
+                session.last_interaction_at = max(
+                    session.last_interaction_at, session.last_completed_at
+                )
                 session.activity.update(completed_at=session.last_completed_at, dirty=True)
                 if session.subagents:
                     session.subagents["closed"] = True
@@ -432,6 +438,7 @@ class CodexEvents:
             return False
         if session.activity.get("turn_id") != turn_id:
             session.turn_started = started or time.time()
+            session.last_interaction_at = max(session.last_interaction_at, session.turn_started)
             session.activity = {
                 "turn_id": turn_id,
                 "started": session.turn_started,
@@ -577,6 +584,18 @@ class CodexEvents:
             await self.activity_tick()
             await asyncio.sleep(upstream.CARD_MIN_GAP)
 
+    async def note_interaction(self, session):
+        if session.status == "ended":
+            return
+        session.last_interaction_at = time.time()
+        self.backend.store.save()
+        try:
+            await self.update_thread_title(session)
+        except (discord.HTTPException, OSError):
+            # A cosmetic rename failure must not fail an accepted prompt/command.
+            # Maintenance will retry using the persisted interaction timestamp.
+            LOG.warning("Could not wake thread title for %s", session.codex_thread, exc_info=True)
+
     async def observe_session(self, session, info):
         if session.status == "ended":
             return
@@ -585,6 +604,10 @@ class CodexEvents:
         changed_name = bool(info.get("name") and info["name"] != session.name)
         if info.get("name"):
             session.name = info["name"]
+        # Native timestamps describe activity; reading the snapshot does not.
+        session.last_interaction_at = max(
+            session.last_interaction_at, info.get("updatedAt") or 0
+        )
         await self.update_thread_title(session)
         if changed_name:
             channel = await self.backend.live_channel(session)
@@ -596,6 +619,12 @@ class CodexEvents:
 
         if session.status == "ended":
             return
+        # A display-only idle check must not reopen an archived thread.
+        channel = self.backend.get_channel(session.discord_thread) or await self.backend.fetch_channel(
+            session.discord_thread
+        )
+        if session.status == "ended":
+            return  # The session may have closed while fetching the channel.
         collision = any(
             s is not session and s.status != "ended" and s.name == session.name
             for s in self.backend.store.sessions.values()
@@ -603,8 +632,11 @@ class CodexEvents:
         # Codex IDs are UUIDv7, so their leading digits are a shared timestamp.
         # Use the entropy-bearing tail when upstream's renderer needs a short suffix.
         short_id = (session.codex_thread or "")[-4:]
-        title = thread_title(session.name, sid=short_id, collides=collision)
-        channel = await self.backend.live_channel(session)
+        sleeping = (
+            session.status != "running"
+            and time.time() - session.last_interaction_at >= THREAD_IDLE_SECONDS
+        )
+        title = thread_title(session.name, sid=short_id, collides=collision, sleeping=sleeping)
         frontend = self.backend.frontend
         pending = session.discord_thread in frontend._retitling
         # Replace queued work even when the visible name already matches: an

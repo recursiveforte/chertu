@@ -26,6 +26,7 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         self.adapter = self.host.codex
         self.channel = SimpleNamespace(
             id=300,
+            name="🚀 original",
             parent_id=100,
             parent=self.host.project_channels[100],
             archived=False,

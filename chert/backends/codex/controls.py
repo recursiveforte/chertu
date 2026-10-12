@@ -23,6 +23,9 @@ class CodexControls:
     async def execute(self, name, channel, user, args, respond):
         if name in {"model", "globalmodel", "fast"} and user.id != self.backend.owner:
             return await respond(f"/{name} is owner-only.")
+        session = self.backend.store.sessions.get(channel.id)
+        if session and name not in {"kill", "close"}:
+            await self.backend.events.note_interaction(session)
         if name == "help":
             from chert.discord.commands import help_text
 

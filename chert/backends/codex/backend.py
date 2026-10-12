@@ -304,6 +304,7 @@ class CodexBackend:
             # Queue acceptance is not a turn transition. The socket reader may
             # already be several turns ahead of Discord's ordered event handler.
             # Only lifecycle events (or idle reconciliation) advance the card.
+            await self.events.note_interaction(session)
             session.service_tier = None
             session.collaboration_mode = None
             self.store.save()
@@ -458,8 +459,16 @@ class CodexBackend:
                         LOG.exception("Could not revive Codex session %s", session.codex_thread)
         self.store.meta["boot_id"] = boot
         self.store.save()
+        title_check_at = 0
         while not self.is_closed():
             try:
+                if time.time() >= title_check_at:
+                    title_check_at = time.time() + 60
+                    for session in list(self.store.sessions.values()):
+                        try:
+                            await self.events.update_thread_title(session)
+                        except Exception:
+                            LOG.exception("Could not refresh thread title for %s", session.codex_thread)
                 for session in list(self.store.sessions.values()):
                     await self.reactions.reconcile(session)
                     if (

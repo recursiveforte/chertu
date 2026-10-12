@@ -2,6 +2,9 @@
 
 from dataclasses import asdict, dataclass, field
 import json
+import time
+
+import discord
 from pathlib import Path
 from chert.persistence import write_json
 
@@ -33,6 +36,7 @@ class Session:
     activity: dict = field(default_factory=dict)
     subagents: dict = field(default_factory=dict)
     journal_seen: list[str] = field(default_factory=list)
+    last_interaction_at: float = field(default_factory=time.time)
     last_completed_at: float = 0
     terminal_pane: str | None = None
     terminal_command: str = ""
@@ -64,6 +68,14 @@ class SessionStore:
                 raise ValueError(f"Unsupported session state version in {path}")
             self.meta = data.get("meta", {})
             for row in data["sessions"]:
+                # Recover an existing session's clock without making a bridge
+                # restart count as interaction. Old state has no dedicated clock.
+                row.setdefault("last_interaction_at", max(
+                    row.get("last_completed_at", 0),
+                    row.get("turn_started", 0),
+                    *(item.get("time", 0) for item in row.get("recent", [])),
+                    discord.utils.snowflake_time(row["discord_thread"]).timestamp(),
+                ))
                 session = Session(**row)
                 if session.status == "running":
                     session.status = "interrupted"

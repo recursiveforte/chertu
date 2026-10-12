@@ -70,10 +70,12 @@ setup and from Discord uses one implementation.
   The same layout is used for launch and discovery. Regression checks use an
   in-memory Discord sink; the screenshot style has not been visually verified
   in production Discord. Codex does not claim Claude classifier rerouting.
-- Codex thread titles keep the fixed 🚀 prefix; activity changes appear in the
-  activity card without renaming the thread. Explicit session names and collision
-  suffixes still synchronize, and closing a session uses 🌌. Discovery restores
-  earlier activity-based prefixes to 🚀, subject to Discord's rename rate limits.
+- Codex thread titles use 🚀, switching to 💤 after 36 hours without interaction.
+  Accepted prompts, thread commands, and native turn activity refresh a persisted
+  clock; polling and card refreshes do not. Running turns stay 🚀. Interaction
+  restores 🚀, and closing uses 🌌. Names and collision suffixes are preserved.
+  Maintenance checks every minute, even when native discovery is unavailable;
+  Discord rename rate limits may delay the visible change.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
 - A parameterless `/model` picker; selected model/effort settings persist until
@@ -118,9 +120,10 @@ project routing, command schema, permissions, persistence, channel creation,
 archiving, per-thread harness ownership, discovery, recovery, activity rendering,
 model choices, approval/input controls, dashboard routes/assets, backup paths,
 and HTTP authorization. Upstream contract tests detect changes to audited source.
-Thread title tests verify that activity transitions do not trigger renames,
-legacy prefixes are restored, failed renames retry, and closing supersedes
-a pending name update.
+Thread title tests verify the 36-hour boundary, waking on interaction, persisted
+idle clocks, polling without resetting the timer, running/ended sessions, archived
+threads, rename retries, and closing superseding a pending name update. These
+clock-controlled tests do not establish a live 36-hour transition in Discord.
 `/close` tests exercise authorization, backend routing (including disabled Claude),
 archived projects, and ending only the selected Codex session while archiving its
 Discord thread and preserving its mapping. Codex closure archives Discord before
