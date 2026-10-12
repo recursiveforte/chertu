@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 import logging
 import os
 import re
@@ -18,6 +19,8 @@ from chert.discord.audio import AudioMessage, Transcriber, prepare_audio
 from chert.discord.markdown import discord_tables
 from chert.backends.base import Harness
 from chert.backends.codex.backend import CodexBackend
+from chert.backends.codex.state import HostSessionStore
+from chert.hosts import load_hosts
 from chert.backends.claude import ClaudeBackend
 from chert.discord.commands import REMOVED_COMMANDS, help_text, install_session_commands
 from chert.web.bridge_api import BridgeAPI
@@ -38,7 +41,13 @@ class Frontend(upstream.Bridge):
         upstream.CHANNEL_ID = 0
         upstream.PROJECT_ROOT = config.project_root
         super().__init__(intents=self.intents_for_bot())
-        self.codex = CodexBackend(config, options, store, self)
+        self.session_store = store
+        self.hosts = load_hosts(config.hosts_file, config)
+        self.codex_hosts = {
+            name: CodexBackend(replace(config), options, HostSessionStore(store, name), self, host)
+            for name, host in self.hosts.items()
+        }
+        self.codex = self.codex_hosts["local"]
         self.claude = ClaudeBackend(self, enabled=os.environ.get("CLAUDE_ENABLED", "1") != "0")
         self.backends: dict[str, Harness] = {"codex": self.codex, "claude": self.claude}
         self.api = BridgeAPI(self)
@@ -48,6 +57,25 @@ class Frontend(upstream.Bridge):
         install_session_commands(self)
         self.project_commands = ProjectCommands(self, self.project_lock)
         self.project_commands.install()
+
+    def codex_for(self, channel=None, project=None):
+        session = self.session_store.sessions.get(getattr(channel, "id", None))
+        project = project or self.projects.for_channel(channel)
+        name = session.host if session else project.host if project else "local"
+        if name not in self.codex_hosts:
+            raise ValueError(f"Host {name!r} is not configured. Restore its CHERT_HOSTS_FILE entry.")
+        return self.backends["codex"] if name == "local" else self.codex_hosts[name]
+
+    def all_harnesses(self):
+        return [*self.backends.values(), *(backend for name, backend in self.codex_hosts.items() if name != "local")]
+
+    def harness_for(self, name, channel=None, project=None):
+        if name == "codex":
+            return self.codex_for(channel, project)
+        project = project or self.projects.for_channel(channel)
+        if project and project.host != "local":
+            raise ValueError("Remote hosts currently support Codex. Claude runs on the local host.")
+        return self.backends[name]
 
     @staticmethod
     def intents_for_bot():
@@ -75,11 +103,9 @@ class Frontend(upstream.Bridge):
         self.claude.enabled = value
 
     async def update_shared_presence(self):
-        counts = [
-            (name.title(), harness.active_count)
-            for name, harness in self.backends.items()
-            if harness.enabled
-        ]
+        counts = [("Codex", sum(b.active_count for b in self.codex_hosts.values()))]
+        if self.claude.enabled:
+            counts.append(("Claude", self.claude.active_count))
         text = f"🔭 {sum(count for _, count in counts)} travelers · " + " · ".join(
             f"{name} {count}" for name, count in counts
         )
@@ -106,7 +132,9 @@ class Frontend(upstream.Bridge):
     async def on_raw_reaction_add(self, payload):
         # Raw events also cover prompts no longer present in Discord's message cache.
         try:
-            await self.codex.reactions.click(payload)
+            session = self.session_store.sessions.get(payload.channel_id)
+            if session and session.host in self.codex_hosts:
+                await self.codex_hosts[session.host].reactions.click(payload)
         except Exception:
             LOG.exception("Queued prompt reaction handling failed")
 
@@ -125,13 +153,13 @@ class Frontend(upstream.Bridge):
         return thread
 
     async def close(self):
-        await self.codex.shutdown()
+        await asyncio.gather(*(backend.shutdown() for backend in self.codex_hosts.values()))
         titles = list(self._title_tasks)
-        for session in self.codex.store.sessions.values():
+        for session in self.session_store.sessions.values():
             if session.discord_thread in self._retitling:
                 session.thread_title_cache = ""
         if titles:
-            self.codex.store.save()
+            self.session_store.save()
         for task in titles:
             task.cancel()
         await asyncio.gather(*titles, return_exceptions=True)
@@ -176,9 +204,11 @@ class Frontend(upstream.Bridge):
         project = self.projects.for_channel(channel)
         if project is None:
             return None
-        for name, harness in self.backends.items():
+        if channel.id in self.session_store.sessions:
+            return "codex"
+        for harness in self.all_harnesses():
             if harness.owns_thread(channel.id):
-                return name
+                return harness.name
         # Unknown threads must never silently become a new session in another harness.
         return None if getattr(channel, "parent_id", None) else project.harness
 
@@ -190,6 +220,8 @@ class Frontend(upstream.Bridge):
             raise ValueError("Run setup_discord.py to configure project channels.")
         guild = await self.fetch_guild(guild_id)
         self.owner = self.codex.owner = self.codex.config.owner_id or guild.owner_id
+        for backend in self.codex_hosts.values():
+            backend.owner = self.owner
         for project in self.projects.projects.values():
             try:
                 channel = await self.fetch_channel(project.channel_id)
@@ -214,7 +246,8 @@ class Frontend(upstream.Bridge):
             ),
             next(iter(self.project_channels.values()), None),
         )
-        await self.codex.start_backend()
+        for backend in self.codex_hosts.values():
+            await backend.start_backend()
         await self.api.start()
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -313,7 +346,11 @@ class Frontend(upstream.Bridge):
                         break
                 else:
                     if content.startswith("!"):
-                        return await self.backends[harness].message(message)
+                        try:
+                            return await self.harness_for(harness, message.channel).message(message)
+                        except Exception as exc:
+                            LOG.exception("Project command failed")
+                            return await self.say(message.channel, f"Could not run command: {str(exc)[:1500]}")
                 try:
                     return await self.launch_project_message(project, harness, message, content)
                 except Exception as exc:
@@ -326,7 +363,7 @@ class Frontend(upstream.Bridge):
                         message = await prepare_audio(message, self.transcriber)
                         if isinstance(message, AudioMessage):
                             await message.publish(message.channel)
-                    return await self.backends[backend].message(message)
+                    return await self.harness_for(backend, message.channel).message(message)
                 except Exception as exc:
                     LOG.exception("Session message handling failed")
                     return await self.say(message.channel, f"Could not deliver: {str(exc)[:1500]}")
@@ -335,11 +372,12 @@ class Frontend(upstream.Bridge):
         message = await prepare_audio(message, self.transcriber)
         if isinstance(message, AudioMessage):
             prompt = "\n\n".join(part for part in (prompt, message.transcript_text) if part)
-        attached = await self.save_attachments(message)
+        target = self.harness_for(harness, project=project)
+        attached = await target.save_attachments(message) if harness == "codex" and project.host != "local" else await self.save_attachments(message)
         prompt = "\n".join(part for part in (prompt, attached) if part)
         if not prompt:
             return
-        return await self.backends[harness].launch(
+        return await target.launch(
             project,
             prompt,
             message.author,
@@ -373,7 +411,7 @@ class Frontend(upstream.Bridge):
                 if name in {"worktree", "no-worktree"}:
                     harness = project.harness
                     options["worktree"] = name == "worktree"
-                return await self.backends[harness].launch(
+                return await self.harness_for(harness, project=project).launch(
                     project, kwargs["prompt"], interaction.user, respond, **options
                 )
             backend = self.backend_for(interaction.channel)
@@ -389,11 +427,11 @@ class Frontend(upstream.Bridge):
                 from chert.discord.models import show_model_picker
 
                 return await show_model_picker(self, interaction, backend)
-            return await self.backends[backend].command(name, original, interaction, kwargs)
+            return await self.harness_for(backend, interaction.channel).command(name, original, interaction, kwargs)
 
     def project_sessions(self, project):
-        lines = [f"**{project.name}** · default harness: **{project.harness}**"]
-        for harness in self.backends.values():
+        lines = [f"**{project.name}** · host: **{project.host}** · default harness: **{project.harness}**"]
+        for harness in self.all_harnesses():
             lines.extend(harness.session_lines(project))
         return (
             "\n".join(lines)[:1900]
@@ -450,5 +488,5 @@ class Frontend(upstream.Bridge):
             return
         with self.project_context(self.projects.for_channel(interaction.channel)):
             if self.backend_for(interaction.channel) == "codex":
-                return await self.codex.controls.on_component(interaction)
+                return await self.codex_for(interaction.channel).controls.on_component(interaction)
             return await super().on_interaction(interaction)

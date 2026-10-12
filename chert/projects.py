@@ -15,9 +15,13 @@ class Project:
     harness: str = "codex"
     archived: bool = False
     worktrees: bool = False
+    host: str = "local"
 
     def __post_init__(self):
-        self.directory = str(Path(self.directory).expanduser().resolve())
+        if self.host == "local":
+            self.directory = str(Path(self.directory).expanduser().resolve())
+        elif not Path(self.directory).is_absolute():
+            raise ValueError("Remote project directories must be absolute.")
         if self.harness not in {"codex", "claude"}:
             raise ValueError(f"Unknown harness for project {self.name}: {self.harness}")
 
@@ -25,7 +29,7 @@ class Project:
     def topic(self):
         workspace = "worktree" if self.worktrees else "project directory"
         return (
-            f"Project: {self.name} · {self.directory} · New threads: {workspace}"
+            f"Project: {self.name} · Host: {self.host} · {self.directory} · New threads: {workspace}"
             " · /worktrees to change · /worktree or /no-worktree to override"
             " · /harness to choose an agent · /archive or /unarchive"
         )
@@ -56,22 +60,25 @@ class ProjectStore:
         channel_id = getattr(channel, "parent_id", None) or getattr(channel, "id", None)
         return next((p for p in self.projects.values() if p.channel_id == channel_id), None)
 
-    def for_directory(self, directory):
+    def for_directory(self, directory, host="local"):
         if not directory:
             return None
-        directory = Path(directory).expanduser().resolve()
+        directory = Path(directory).expanduser().resolve() if host == "local" else Path(directory)
         # Managed worktrees can live outside the source project (or inside a
         # different project, e.g. Chert's own private runtime directory).
         for project in self.projects.values():
+            if project.host != host or host != "local":
+                continue
             if directory.is_relative_to(self.worktree_root(project)):
                 return project
-        matches = [p for p in self.projects.values() if directory.is_relative_to(Path(p.directory))]
+        matches = [p for p in self.projects.values()
+                   if p.host == host and directory.is_relative_to(Path(p.directory))]
         return max(matches, key=lambda p: len(Path(p.directory).parts), default=None)
 
     def worktree_root(self, project):
         return (self.path.parent / "worktrees" / str(project.channel_id)).resolve()
 
-    def validate(self, name, directory, root):
+    def validate(self, name, directory, root, host="local"):
         name = name.strip().lower()
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", name):
             raise ValueError(
@@ -81,17 +88,21 @@ class ProjectStore:
             raise ValueError(
                 f"Project {name!r} already exists. Use /unarchive to reopen an archived project."
             )
-        path = Path(directory).expanduser()
-        path = (Path(root) / path if not path.is_absolute() else path).resolve()
-        if not path.is_dir():
+        path = Path(directory)
+        if host == "local":
+            path = path.expanduser()
+            path = (Path(root) / path if not path.is_absolute() else path).resolve()
+        elif not path.is_absolute():
+            raise ValueError("Resolve the directory on the remote host first.")
+        if host == "local" and not path.is_dir():
             raise ValueError(f"Project directory does not exist on the bot host: {path}")
-        if any(p.directory == str(path) for p in self.projects.values()):
+        if any(p.directory == str(path) and p.host == host for p in self.projects.values()):
             raise ValueError("That directory already has a project channel.")
         return name, str(path)
 
-    def prepare(self, name, directory, root, harness="codex"):
-        name, directory = self.validate(name, directory, root)
-        return Project(name, directory, 0, harness)
+    def prepare(self, name, directory, root, harness="codex", host="local"):
+        name, directory = self.validate(name, directory, root, host)
+        return Project(name, directory, 0, harness, host=host)
 
 
 async def create_project_channel(store, project, guild, category):

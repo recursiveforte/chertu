@@ -89,6 +89,8 @@ class CodexDiscovery:
                             status=live_status(info),
                             backend="app-server",
                             display_model=info.get("model") or "",
+                            host=self.backend.host_name,
+                            project_channel=parent.id,
                         )
                         self.backend.store.sessions[thread.id] = session
                         self.backend.store.save()  # Record the mapping before subscribing to notifications.

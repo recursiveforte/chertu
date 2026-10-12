@@ -345,6 +345,9 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
     parent = SimpleNamespace(id=100, parent_id=None, edit=AsyncMock())
     parent.edit.return_value = parent
     thread = SimpleNamespace(id=300, parent_id=100, parent=parent, archived=False, mention="<#300>")
+    channels = {100: parent, 300: thread}
+    frontend.get_channel = channels.get
+    frontend.fetch_channel = AsyncMock(side_effect=lambda identifier: channels[identifier])
     source = SimpleNamespace(
         id=300,
         channel=parent,
@@ -452,6 +455,7 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
                     mention=f"<#{identifier}>",
                 )
                 parent.create_thread = AsyncMock(return_value=thread)
+                channels[identifier] = thread
                 adapter.live_channel = AsyncMock(return_value=thread)
                 interaction = SimpleNamespace(
                     channel=parent,
@@ -577,6 +581,8 @@ async def main(
             channel = SimpleNamespace(
                 id=300, parent_id=100, parent=frontend.project_channels[100], archived=False
             )
+            frontend.get_channel = lambda identifier: channel if identifier == 300 else None
+            frontend.fetch_channel = AsyncMock(return_value=channel)
             adapter.live_channel = AsyncMock(return_value=channel)
             frontend.retitle = Mock()
             messages, edits, events = [], [], []

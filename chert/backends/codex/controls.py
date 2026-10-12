@@ -1,6 +1,8 @@
 """Codex session commands and interaction controls."""
 
 import asyncio
+import base64
+import io
 import logging
 from pathlib import Path
 import time
@@ -10,7 +12,6 @@ import re
 import discord
 
 from chert.vendor import bridge as upstream
-from chert.backends.codex import storage as codex_storage
 from chert.backends.codex.client import RpcError, live_status
 
 LOG = logging.getLogger(__name__)
@@ -21,6 +22,9 @@ class CodexControls:
         self.backend = backend
 
     async def execute(self, name, channel, user, args, respond):
+        if self.backend.remote and (name in {"disk", "backup", "s3", "offload", "restore", "feldspar"}
+                                    or (name == "fork" and args.get("to") == "claude")):
+            raise ValueError(f"/{name} is not available on remote hosts. It will not run on the gateway.")
         if name in {"model", "globalmodel", "fast"} and user.id != self.backend.owner:
             return await respond(f"/{name} is owner-only.")
         session = self.backend.store.sessions.get(channel.id)
@@ -64,7 +68,7 @@ class CodexControls:
             self.backend.store.save()
             from chert.provisioning import ENV, write_env
 
-            if ENV.exists():
+            if ENV.exists() and not self.backend.remote:
                 write_env({"CODEX_MODEL": model})
             return await respond(
                 f"🧠 Model for new sessions: `{model}` · existing sessions switch on their next turn"
@@ -126,6 +130,22 @@ class CodexControls:
         session = self.backend.store.sessions.get(channel.id)
         if session is None:
             raise ValueError("Use this command in a session thread.")
+        if name == "download":
+            if self.backend.remote:
+                result = await self.backend.remote.run("download", path=args["path"], cwd=session.cwd)
+                file = discord.File(io.BytesIO(base64.b64decode(result["data"])), filename=result["name"])
+            else:
+                path = Path(args["path"]).expanduser()
+                if not path.is_absolute():
+                    path = Path(session.cwd) / path
+                if path.stat().st_size > min(upstream.FILE_LIMIT_BYTES, 25 * 1024 * 1024):
+                    raise ValueError("File exceeds the upload limit (25 MB).")
+                file = discord.File(path)
+            try:
+                await channel.send(file=file, allowed_mentions=upstream.NO_PING)
+            finally:
+                file.close()
+            return await respond("File sent.")
         if session.status == "ended" and name not in {
             "revive",
             "fork",
@@ -400,13 +420,13 @@ class CodexControls:
                                 "sourceKinds": ["cli", "vscode", "exec", "appServer", "unknown"],
                             },
                         )
-                        rows.extend(index_row(t) for t in result["data"])
+                        rows.extend(index_row(t, local=not self.backend.remote) for t in result["data"])
                         cursor = result.get("nextCursor")
                         if not cursor:
                             break
                 rows.sort(key=lambda r: -r["mtime"])
                 existing = {r["sid"] for r in rows}
-                backed_up = await asyncio.to_thread(codex_storage.backup_index)
+                backed_up = await self.backend.backup_index()
                 rows.extend(r for sid, r in backed_up.items() if sid not in existing)
                 rows.sort(key=lambda r: -r["mtime"])
                 self.backend._index_cache = (time.time(), rows)
@@ -416,9 +436,9 @@ class CodexControls:
                 "thread/read", {"threadId": query, "includeTurns": False}
             )
         except RpcError:
-            rows = await asyncio.to_thread(codex_storage.backup_index)
+            rows = await self.backend.backup_index()
             return [rows[query]] if query in rows else []
-        return [index_row(result["thread"])]
+        return [index_row(result["thread"], local=not self.backend.remote)]
 
     async def autocomplete(self, command, current):
         if command == "resume":
@@ -527,8 +547,8 @@ class SimpleMessage:
         pass
 
 
-def index_row(info):
-    path = Path(info["path"]) if info.get("path") else None
+def index_row(info, local=True):
+    path = Path(info["path"]) if local and info.get("path") else None
     return {
         **info,
         "sid": info["id"],
@@ -539,7 +559,7 @@ def index_row(info):
         "cwd": info.get("cwd") or "",
         "mtime": info.get("updatedAt") or info.get("createdAt") or 0,
         "size": path.stat().st_size if path and path.exists() else 0,
-        "where": "local",
+        "where": "local" if local else "remote",
         "live": (info.get("status") or {}).get("type") in {"active", "idle"},
     }
 

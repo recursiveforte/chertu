@@ -1,12 +1,17 @@
 """Persistent native Codex session mappings, including legacy state compatibility."""
 
 from dataclasses import asdict, dataclass, field
+from collections.abc import MutableMapping
 import json
 import time
 
 import discord
 from pathlib import Path
 from chert.persistence import write_json
+
+
+def session_key(session):
+    return session.codex_thread if session.host == "local" else f"{session.host}~{session.codex_thread}"
 
 
 @dataclass
@@ -49,6 +54,8 @@ class Session:
     thread_title_cache: str = ""
     ended_at: float = 0
     prompt_messages: list[dict] = field(default_factory=list)
+    host: str = "local"
+    project_channel: int | None = None
 
 
 class SessionStore:
@@ -91,3 +98,41 @@ class SessionStore:
             },
             backup=True,
         )
+
+
+class HostSessions(MutableMapping):
+    """A live host-scoped view; every save still writes the complete state."""
+
+    def __init__(self, store, host):
+        self.store, self.host = store, host
+
+    def __getitem__(self, key):
+        session = self.store.sessions[key]
+        if session.host != self.host:
+            raise KeyError(key)
+        return session
+
+    def __setitem__(self, key, session):
+        existing = self.store.sessions.get(key)
+        if existing and existing.host != self.host:
+            raise ValueError("A Discord thread is already owned by another host.")
+        session.host = self.host
+        self.store.sessions[key] = session
+
+    def __delitem__(self, key):
+        self[key]
+        del self.store.sessions[key]
+
+    def __iter__(self):
+        return iter([key for key, value in self.store.sessions.items() if value.host == self.host])
+
+    def __len__(self):
+        return sum(value.host == self.host for value in self.store.sessions.values())
+
+
+class HostSessionStore:
+    def __init__(self, store, host):
+        self.sessions = HostSessions(store, host)
+        self.meta = store.meta if host == "local" else store.meta.setdefault("hosts", {}).setdefault(host, {})
+        self.path = store.path if host == "local" else store.path.parent / "hosts" / host / store.path.name
+        self.save = store.save

@@ -38,13 +38,19 @@ class ProjectCommands:
             )
         raise ValueError("Project categories are missing. Run setup_discord.py again.")
 
-    async def create_project(self, name, directory):
+    async def create_project(self, name, directory, host="local"):
         async with self.lock:
+            if host not in self.frontend.hosts:
+                raise ValueError(f"Unknown host: {host}. Use /hosts to list configured hosts.")
+            remote = self.frontend.codex_hosts[host].remote
+            if remote:
+                directory = await remote.run("directory", directory=directory)
             project = self.registry.prepare(
                 name,
                 directory,
                 self.frontend.config.project_root,
-                os.environ.get("DEFAULT_HARNESS") or "codex",
+                "codex" if remote else os.environ.get("DEFAULT_HARNESS") or "codex",
+                host=host,
             )
             category = await self.category()
             channel = await create_project_channel(self.registry, project, category.guild, category)
@@ -69,6 +75,8 @@ class ProjectCommands:
     async def set_harness(self, project, harness):
         if harness not in {"codex", "claude"}:
             raise ValueError("Choose codex or claude.")
+        if project.host != "local" and harness != "codex":
+            raise ValueError("Remote hosts currently support Codex.")
         async with self.lock:
             previous = project.harness
             project.harness = harness
@@ -90,7 +98,11 @@ class ProjectCommands:
     async def set_worktrees(self, project, enabled):
         async with self.lock:
             if enabled:
-                await asyncio.to_thread(validate_repository, project.directory)
+                remote = self.frontend.codex_for(project=project).remote
+                if remote:
+                    await remote.run("repository", directory=project.directory)
+                else:
+                    await asyncio.to_thread(validate_repository, project.directory)
             previous = project.worktrees
             project.worktrees = enabled
             try:
@@ -107,6 +119,15 @@ class ProjectCommands:
                 ) from exc
 
     def install(self):
+        @self.frontend.tree.command(name="hosts", description="Show configured execution hosts and their connection status")
+        async def hosts_command(interaction: discord.Interaction):
+            if not await self.project_permission(interaction):
+                return
+            lines = [f"**{name}** · {'connected' if backend.live.connected else 'not connected'}"
+                     for name, backend in self.frontend.codex_hosts.items()]
+            await interaction.response.send_message(
+                "\n".join(lines) + "\nChoose a host with `/project name:… dir:… host:…`.", ephemeral=True)
+
         @self.frontend.tree.command(
             name="worktrees",
             description="View or set whether new sessions in this project create worktrees",
@@ -132,17 +153,24 @@ class ProjectCommands:
             )
 
         @self.frontend.tree.command(
-            name="project", description="Create a project channel for a directory on the bot host"
+            name="project", description="Create a project channel for a directory on an execution host"
         )
-        async def project_command(interaction: discord.Interaction, name: str, dir: str):
+        async def project_command(interaction: discord.Interaction, name: str, dir: str, host: str = "local"):
             if not await self.project_permission(interaction):
                 return
             await interaction.response.defer(ephemeral=True)
-            project = await self.create_project(name, dir)
+            project = await self.create_project(name, dir, host)
             await interaction.followup.send(
-                f"Created <#{project.channel_id}> · `{project.directory}` · {project.harness}",
+                f"Created <#{project.channel_id}> · **{project.host}** · `{project.directory}` · {project.harness}",
                 ephemeral=True,
             )
+
+        @project_command.autocomplete("host")
+        async def host_names(interaction, current):
+            if not self.frontend.allowed_user(interaction.user):
+                return []
+            return [discord.app_commands.Choice(name=name, value=name)
+                    for name in self.frontend.hosts if current.lower() in name][:25]
 
         @self.frontend.tree.command(
             name="harness",

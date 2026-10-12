@@ -16,7 +16,8 @@ shared rendering; the current product intentionally uses project channels.
 
 | Operation | Implementation |
 | --- | --- |
-| `/project name dir` | Registers an existing host directory and creates its channel |
+| `/project name dir [host]`, `/hosts` | Registers a directory on a configured execution host; lists connection status |
+| `/download path` | Sends a file from the Codex session's host to Discord |
 | `/harness [name]` | Changes the durable default for new sessions; existing threads retain their harness |
 | `/worktrees [enabled]` | Views/changes the durable per-project default for fresh Git worktrees, shown in the channel topic; defaults to off |
 | `/worktree prompt`, `/no-worktree prompt` | Starts a new session with the project harness, overriding the workspace default once |
@@ -42,6 +43,21 @@ The old standalone and compatibility frontends are gone. Project creation from
 setup and from Discord uses one implementation.
 
 ## Preserved behavior
+
+Multi-host Codex routing is implemented over SSH, with separate connections,
+host-scoped discovery, approvals, settings, uploads, worktrees, terminals, and
+dashboard identities. Existing records default to the local host. Regression
+tests exercise host isolation, matching native IDs, offline failure without local
+fallback, remote filesystem operations, routing, and persistence. No MacBook
+connection or desktop computer-use task has been exercised live. Remote Claude,
+Feldspar, disk/S3 commands, S3 transcript recovery, and `hearth-send` are not
+implemented; see [the exact scope and setup](multi-host.md).
+
+On 2026-10-12, the isolated native `tests/live_codex_activity.py --projects`
+check passed: a project prompt completed on the intended native directory and
+Discord sink, and changing the default harness retained a working existing Codex
+conversation. The test uses a private temporary CODEX_HOME and no production
+Discord messages. Its in-memory channel lookup now covers thread-title updates.
 
 - One Discord connection and command registry; owner/allowlist authorization.
 - Project directory matching for discovery, with the most specific match winning.

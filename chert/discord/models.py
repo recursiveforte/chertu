@@ -66,7 +66,8 @@ async def show_model_picker(frontend, interaction, backend):
             "Claude is disabled. Use /harness codex.", ephemeral=True
         )
     if backend == "codex":
-        session = frontend.codex.store.sessions.get(interaction.channel_id)
+        adapter = frontend.codex_for(interaction.channel)
+        session = adapter.store.sessions.get(interaction.channel_id)
         if session is None:
             return await interaction.response.send_message(
                 "Open a session thread to choose its model. Use `/globalmodel` to change the default for all sessions.",
@@ -77,7 +78,7 @@ async def show_model_picker(frontend, interaction, backend):
                 "Revive this session before choosing a model.", ephemeral=True
             )
         await interaction.response.defer(thinking=True, ephemeral=True)
-        live = frontend.codex.live
+        live = adapter.live
         await live.connect()
         catalog, info = await asyncio.gather(
             live.call("model/list", {}),

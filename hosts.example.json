@@ -1,0 +1,13 @@
+{
+  "hosts": [
+    {
+      "name": "macbook",
+      "ssh": "cheru@macbook",
+      "project_root": "/Users/cheru/Code",
+      "socket": "/Users/cheru/.codex/app-server-control/app-server-control.sock",
+      "python": "/opt/homebrew/bin/python3",
+      "codex": "/opt/homebrew/bin/codex",
+      "path": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    }
+  ]
+}

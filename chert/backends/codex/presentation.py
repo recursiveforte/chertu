@@ -71,9 +71,12 @@ def activity_text(session, status, started=0, detail="", now=None, workspace=Non
     head = (f"**{name}** · `{workspace}`\n"
             f"{emoji} **{label}**{elapsed} · updated <t:{int(clock)}:R>\n"
             f"-# 🧠 model `{model}`")
+    if session.host != "local":
+        head += f" · host `{session.host}`"
     dashboard = upstream.DASHBOARD.removesuffix("/claudes").removesuffix("/codex") + "/codex"
     if session.codex_thread:
-        dashboard += "/s/" + quote(session.codex_thread, safe="")
+        from chert.backends.codex.state import session_key
+        dashboard += "/s/" + quote(session_key(session), safe="")
     footer = f"-# [dashboard]({dashboard}) · reply to talk · `!screen` · `!help`"
     # Keep the controls intact even when native progress fills the message budget.
     budget = max(0, 1990 - len(head) - len(footer) - 2)

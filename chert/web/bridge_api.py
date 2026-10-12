@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from aiohttp import web
 from chert.vendor import bridge as upstream
+from chert.backends.codex.state import session_key
 
 
 class BridgeAPI:
@@ -46,8 +47,8 @@ class BridgeAPI:
         session = next(
             (
                 s
-                for s in self.frontend.codex.store.sessions.values()
-                if s.codex_thread == body.get("sid")
+                for s in self.frontend.session_store.sessions.values()
+                if session_key(s) == body.get("sid")
             ),
             None,
         )
@@ -64,25 +65,31 @@ class BridgeAPI:
 
     async def codex_send_http(self, request):
         body, session = await self.session_request(request)
-        channel = await self.frontend.codex.live_channel(session)
+        backend = self.frontend.codex_hosts.get(session.host)
+        if backend is None:
+            return web.json_response({"error": f"Host {session.host} is not configured"}, status=503)
+        channel = await backend.live_channel(session)
         key = body.get("key")
         if key in {"Escape", "esc"} and not session.terminal_pane:
-            await self.frontend.codex.stop(channel)
+            await backend.stop(channel)
         elif key:
-            await self.frontend.codex.terminal.key(session, key)
-            self.frontend.codex.store.save()
+            await backend.terminal.key(session, key)
+            backend.store.save()
         else:
             text = (body.get("text") or "").strip()
             if not text or len(text) > upstream.checkin.MAX_SEND_LEN:
                 return web.json_response({"error": "empty or oversized message"}, status=400)
-            await self.frontend.codex.send_prompt(channel, text)
+            await backend.send_prompt(channel, text)
         return web.json_response({"ok": True})
 
     async def codex_screen_http(self, request):
         _, session = await self.session_request(request)
-        await self.frontend.codex.ensure_live(session)
-        text = await self.frontend.codex.terminal.screen(session, ansi=True)
-        self.frontend.codex.store.save()
+        backend = self.frontend.codex_hosts.get(session.host)
+        if backend is None:
+            return web.json_response({"error": f"Host {session.host} is not configured"}, status=503)
+        await backend.ensure_live(session)
+        text = await backend.terminal.screen(session, ansi=True)
+        backend.store.save()
         return web.json_response(
             {
                 "html": upstream.checkin.ansi_to_html(text),

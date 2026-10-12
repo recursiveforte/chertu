@@ -21,6 +21,13 @@ and produces an error so the sender can retry.
 
 This fork of [ceselder/chert](https://github.com/ceselder/chert) uses **upstream Chert as its source of truth**. One bot and one command registry serve **one channel per project**. Each project binds a directory on the bot host to a Discord channel and has a default harness: Codex or Claude.
 
+Projects can also use a remote Codex host, such as a MacBook for desktop work.
+Run one Discord bridge on the always-on machine and connect it to each host's
+existing Codex daemon over SSH. `/hosts` lists configured hosts;
+`/project name:desktop dir:/Users/cheru/Code host:macbook` selects a host for a new
+project. Omitting `host` uses `local` (lemma in this deployment). Existing projects
+and threads stay on their original host. See [multi-host setup](docs/multi-host.md).
+
 Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.
 
 Use `/worktrees enabled:True` in a project channel to give each new session a fresh
@@ -96,12 +103,12 @@ Session commands use the harness recorded for the thread. Project channels selec
 
 | Operation | Commands |
 | --- | --- |
-| Projects | `/project name dir`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
+| Projects | `/project name dir [host]`, `/hosts`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
 | Launch | Plain prompt, `/codex`, `/claude`, `/worktree prompt`, `/no-worktree prompt`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
 | Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/mode`, `/yolo`, `/rename` |
 | Control | `/stop`, `/close`, `/refresh`, `/restart`, `/revive`, `/kill` |
-| Inspect | `/log`, `/screen`, `/key`, `/help` |
+| Inspect | `/log`, `/screen`, `/key`, `/download path` (Codex), `/help` |
 | Notifications / budget | `/mute`, `/unmute`, `/supernova` |
 | Host / reviews | `/disk`, `/backup`, `/s3`, `/offload`, `/restore`, `/feldspar` |
 
@@ -128,6 +135,7 @@ See [.env.example](.env.example), and [the upstream settings reference](docs/cla
 | `CHERT_BACKEND=both` | Install both harness integrations. Project mode uses the shared frontend. |
 | `DISCORD_GUILD_ID` | Server using project channels; setup fills it in. |
 | `PROJECT_STATE_FILE` | Project/channel registry; default `private/projects.json`. |
+| `CHERT_HOSTS_FILE` | Optional JSON registry of SSH execution hosts; local remains the default. |
 | `DEFAULT_HARNESS` | Default for newly registered projects; `codex` unless configured otherwise. |
 | `DISCORD_OWNER_ID`, `SPAWN_ALLOW_USERS` | Owner and additional permitted users. All project channels use the same policy. |
 | `CLAUDE_ENABLED` | Set `0` until Claude is installed and authenticated. |

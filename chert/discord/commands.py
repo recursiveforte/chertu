@@ -78,7 +78,7 @@ def install_session_commands(frontend):
                     @functools.wraps(callback)
                     async def routed(interaction, current):
                         if frontend.backend_for(interaction.channel) == "codex":
-                            return await frontend.codex.controls.autocomplete(command_name, current)
+                            return await frontend.codex_for(interaction.channel).controls.autocomplete(command_name, current)
                         return await callback(interaction, current)
 
                     return routed
@@ -89,6 +89,12 @@ def install_session_commands(frontend):
     @discord.app_commands.describe(prompt="What the agent should do in this project")
     async def codex(interaction: discord.Interaction, prompt: str):
         await frontend.dispatch_command("codex", None, interaction, {"prompt": prompt})
+
+    @frontend.tree.command(name="download", description="Send a file from this Codex session’s host to Discord")
+    async def download(interaction: discord.Interaction, path: str):
+        if frontend.backend_for(interaction.channel) != "codex":
+            return await interaction.response.send_message("Use /download in a Codex session thread.", ephemeral=True)
+        await frontend.dispatch_command("download", None, interaction, {"path": path})
 
     @frontend.tree.command(
         name="worktree",

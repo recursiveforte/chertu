@@ -1,6 +1,7 @@
 """Codex harness lifecycle and its Discord-facing interface."""
 
 import asyncio
+import base64
 import logging
 from pathlib import Path
 import time
@@ -37,7 +38,7 @@ class CodexBackend:
         return [
             f"Codex · {s.status} · **{s.name}** → <#{s.discord_thread}>"
             for s in self.store.sessions.values()
-            if self.frontend.projects.for_directory(s.cwd) == project
+            if self.project_for(s.cwd, s.project_channel) == project
         ]
 
     def owns_thread(self, channel_id):
@@ -59,7 +60,11 @@ class CodexBackend:
         )
 
     async def launch(self, project, prompt, user, respond, source=None, worktree=None):
-        cwd = await session_directory(self.frontend.projects, project, worktree)
+        if self.remote:
+            operation = "worktree" if (project.worktrees if worktree is None else worktree) else "directory"
+            cwd = Path(await self.remote.run(operation, directory=project.directory, channel_id=project.channel_id))
+        else:
+            cwd = await session_directory(self.frontend.projects, project, worktree)
         try:
             thread = await self.start_session(prompt, source_message=source, cwd=cwd)
         except Exception as exc:
@@ -81,21 +86,44 @@ class CodexBackend:
     def main_channel(self, channel):
         self._main_channel = channel
 
-    def __init__(self, config, options, store, frontend):
+    def __init__(self, config, options, store, frontend, host=None):
         self.frontend, self.config, self.options, self.store = frontend, config, options, store
+        from chert.hosts import RemoteHost
+        self.host_name = host.name if host else "local"
+        self.remote = RemoteHost(host) if host and host.ssh else None
         self.main_channel = None
         self.owner = config.owner_id
         self.stopping = set()
         self.session_creation_lock = asyncio.Lock()
         self.live = LiveCodex(
-            config.live_socket or Path.home() / ".codex/app-server-control/app-server-control.sock"
+            (host.socket if self.remote else config.live_socket)
+            or Path.home() / ".codex/app-server-control/app-server-control.sock",
+            remote=self.remote,
         )
         self.background_tasks = []
         self.events = CodexEvents(self)
         self.reactions = PromptReactions(self)
         self.controls = CodexControls(self)
         self.discovery = CodexDiscovery(self)
-        self.terminal = CodexTerminal(options.binary, self.live.socket)
+        self.terminal = CodexTerminal(host.codex if self.remote else options.binary,
+                                      host.socket if self.remote else self.live.socket,
+                                      remote=self.remote)
+
+    def project_for(self, cwd, channel_id=None):
+        projects = self.frontend.projects
+        if not channel_id:
+            channel_id = next((s.project_channel for s in self.store.sessions.values()
+                               if s.cwd == cwd and s.project_channel), None)
+        if channel_id:
+            return next((p for p in projects.projects.values()
+                         if p.channel_id == channel_id and p.host == self.host_name), None)
+        return projects.for_directory(cwd, self.host_name)
+
+    async def restore(self, sid):
+        return False if self.remote else await asyncio.to_thread(codex_storage.restore, sid)
+
+    async def backup_index(self):
+        return {} if self.remote else await asyncio.to_thread(codex_storage.backup_index)
 
     async def wait_until_ready(self):
         await self.frontend.wait_until_ready()
@@ -128,13 +156,14 @@ class CodexBackend:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.live.close()
+        if self.remote:
+            await self.remote.close()
 
     async def webhook_for(self, channel=None):
         return await self.frontend.webhook_for(channel or self.main_channel)
 
     async def discovery_channel(self, info):
-        projects = self.frontend.projects
-        project = projects.for_directory(info.get("cwd"))
+        project = self.project_for(info.get("cwd"))
         if project and not project.archived:
             return self.frontend.project_channels.get(project.channel_id)
         return None
@@ -192,7 +221,7 @@ class CodexBackend:
                     "thread/resume", {"threadId": codex_id, "excludeTurns": True}
                 )
             except RpcError:
-                if not await asyncio.to_thread(codex_storage.restore, codex_id):
+                if not await self.restore(codex_id):
                     raise
                 result = await self.live.call(
                     "thread/resume", {"threadId": codex_id, "excludeTurns": True}
@@ -200,7 +229,7 @@ class CodexBackend:
         else:
             if cwd is None:
                 raise ValueError("Start sessions from a registered project channel.")
-            cwd = Path(cwd).expanduser().resolve()
+            cwd = Path(cwd) if self.remote else Path(cwd).expanduser().resolve()
             params = {
                 "cwd": str(cwd),
                 "approvalPolicy": "on-request",
@@ -220,7 +249,9 @@ class CodexBackend:
         info = result["thread"]
         parent = self.main_channel
         projects = self.frontend.projects
-        destination = projects.for_directory(info.get("cwd"))
+        destination = self.project_for(info.get("cwd"))
+        if self.remote and current and current.host == self.host_name and not codex_id:
+            destination = current  # Remote worktrees live outside the source directory.
         if destination is None or destination.archived:
             raise ValueError(
                 "This session needs an active project for its working directory. Use /project or /unarchive first."
@@ -251,6 +282,8 @@ class CodexBackend:
             mirror_since=time.time(),
             display_model=result.get("model") or info.get("model") or "",
             source_message=source_message.id if source_message else None,
+            host=self.host_name,
+            project_channel=destination.channel_id,
         )
         session.service_tier = self.store.meta.get("service_tier")
         self.store.sessions[thread.id] = session
@@ -312,6 +345,18 @@ class CodexBackend:
 
     async def save_attachments(self, message):
         # Use the exact upstream upload naming, limits, and local-path convention.
+        if self.remote:
+            lines = []
+            for attachment in message.attachments:
+                if attachment.size > min(upstream.FILE_LIMIT_BYTES, 25 * 1024 * 1024):
+                    raise ValueError("Attachment exceeds the remote upload limit (25 MB).")
+                data = await attachment.read()
+                if len(data) > 25 * 1024 * 1024:
+                    raise ValueError("Attachment exceeds 25 MB.")
+                path = await self.remote.run("upload", name=attachment.filename,
+                                             data=base64.b64encode(data).decode())
+                lines.append(f"[attachment saved to {path} · {len(data)} bytes]")
+            return "\n".join(lines)
         return await self.frontend.save_attachments(message)
 
     async def message(self, message):
@@ -359,7 +404,7 @@ class CodexBackend:
         try:
             await self.live.attach(session.codex_thread)
         except RpcError:
-            restored = await asyncio.to_thread(codex_storage.restore, session.codex_thread)
+            restored = await self.restore(session.codex_thread)
             if not restored:
                 await self.live.call("thread/unarchive", {"threadId": session.codex_thread})
             await self.live.attach(session.codex_thread)

@@ -16,8 +16,9 @@ class RpcError(RuntimeError):
 
 
 class LiveCodex:
-    def __init__(self, socket: Path, timeout=30):
+    def __init__(self, socket: Path, timeout=30, remote=None):
         self.socket, self.timeout = Path(socket), timeout
+        self.remote = remote
         self.http = self.ws = self.reader = None
         self.pending = {}
         self.sequence = 0
@@ -49,6 +50,8 @@ class LiveCodex:
         if self.connected:
             return
         await self.close()
+        if self.remote:
+            self.socket = await self.remote.connect()
         self.http = aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(self.socket)))
         self.generation += 1
         try:

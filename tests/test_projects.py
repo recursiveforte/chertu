@@ -312,7 +312,7 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
     async def test_project_commands_schema_and_harness_picker(self):
         for name in ("project", "harness", "archive", "unarchive"):
             self.assertIsNotNone(self.bot.tree.get_command(name))
-        self.assertEqual(list(self.bot.tree.get_command("project")._params), ["name", "dir"])
+        self.assertEqual(list(self.bot.tree.get_command("project")._params), ["name", "dir", "host"])
         self.assertIsNone(self.bot.tree.get_command("hub"))
         interaction = self.interaction()
         await self.bot.tree.get_command("harness")._do_call(interaction, {"name": ""})

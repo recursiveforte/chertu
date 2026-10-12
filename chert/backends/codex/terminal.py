@@ -10,11 +10,14 @@ from chert.vendor import bridge as upstream
 
 
 class CodexTerminal:
-    def __init__(self, binary, socket):
+    def __init__(self, binary, socket, remote=None):
         self.binary, self.socket = binary, socket
+        self.remote = remote
         self.lock = asyncio.Lock()
 
     async def run(self, *args):
+        if self.remote:
+            return await self.remote.run("tmux", args=args)
         env = os.environ.copy()
         env.pop("DISCORD_BOT_TOKEN", None)
         proc = await asyncio.create_subprocess_exec(
@@ -57,7 +60,7 @@ class CodexTerminal:
         )
 
     async def ensure(self, session):
-        if not shutil.which("tmux"):
+        if not self.remote and not shutil.which("tmux"):
             raise ValueError("Install tmux to use the terminal view.")
         async with self.lock:
             if await self.valid(session):
@@ -81,6 +84,14 @@ class CodexTerminal:
                 ]
             )
             session.terminal_command = command
+            environment = []
+            if self.remote and self.remote.host.path:
+                environment = ["-e", "PATH=" + self.remote.host.path]
+            if not self.remote:
+                environment = [
+                    "-e", "PATH=" + os.environ.get("PATH", "/usr/bin:/bin"),
+                    "-e", "CODEX_HOME=" + os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
+                ]
             rc, pane, error = await self.run(
                 "new-window",
                 "-d",
@@ -93,10 +104,7 @@ class CodexTerminal:
                 "codex-" + session.name[:24],
                 "-c",
                 session.cwd,
-                "-e",
-                "PATH=" + os.environ.get("PATH", "/usr/bin:/bin"),
-                "-e",
-                "CODEX_HOME=" + os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
+                *environment,
                 command,
             )
             if rc:

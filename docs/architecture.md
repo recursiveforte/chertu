@@ -9,6 +9,7 @@ chert/
   __main__.py             python -m chert
   config.py, paths.py     configuration and deployment-relative paths
   projects.py             project records and directory matching
+  hosts.py, host_worker.py named hosts, SSH socket forwarding, remote filesystem/tmux operations
   persistence.py          atomic JSON writes
   provisioning.py         Discord setup and explicit channel resets
   discord/
@@ -46,6 +47,13 @@ The frontend routes through a harness registry. Each harness implements thread
 ownership, message delivery, slash-command execution, and project launches.
 Codex composes its RPC client, discovery service, event processor, command handler,
 and terminal controller; these are separate objects, not an inheritance chain.
+
+Each configured execution host gets its own CodexBackend and RPC/event/terminal
+objects. Session stores are filtered views over one authoritative state file;
+their saves preserve every host's sessions. Project paths and discovery are keyed
+by host, and existing Discord threads route by their recorded session host.
+Remote worktrees, uploads, and terminals use a stdlib helper over SSH. An unavailable
+host never falls back to executing on the gateway. See [multi-host setup](multi-host.md).
 
 Project commands and the local HTTP API are also separate components. The
 frontend subclasses the audited upstream bridge only to reuse its Discord

@@ -22,6 +22,7 @@ class Config:
     discover: bool = True
     live_socket: Path | None = None
     discovery_interval: float = 5
+    hosts_file: Path | None = None
 
     @classmethod
     def from_env(cls):
@@ -58,6 +59,8 @@ class Config:
                 )
             ).expanduser(),
             max(1, float(os.environ.get("CODEX_DISCOVERY_INTERVAL") or 5)),
+            runtime_path(os.environ["CHERT_HOSTS_FILE"], "")
+            if os.environ.get("CHERT_HOSTS_FILE") else None,
         )
 
 

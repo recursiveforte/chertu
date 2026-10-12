@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import time
 import uuid
@@ -31,8 +32,8 @@ def codex_sessions():
         result.append(
             {
                 **row,
-                "sid": row["codex_thread"],
-                "project": Path(row["cwd"]).name,
+                "sid": row["codex_thread"] if row.get("host", "local") == "local" else f"{row['host']}~{row['codex_thread']}",
+                "project": Path(row["cwd"]).name + (f" · {row['host']}" if row.get("host", "local") != "local" else ""),
                 "status": {"running": "busy"}.get(row["status"], row["status"]),
                 "pane": row.get("terminal_pane"),
                 "can_screen": row["status"] != "ended",
@@ -56,10 +57,10 @@ def find(sid):
     if session:
         return session
     try:
-        sid = str(uuid.UUID(sid))
+        path = transcript_path(sid)
     except ValueError:
         return None
-    if (STATE.parent / "codex-transcripts" / f"{sid}.jsonl").exists():
+    if path.exists():
         return {
             "sid": sid,
             "name": sid[:8],
@@ -71,6 +72,15 @@ def find(sid):
             "can_screen": False,
         }
     return None
+
+
+def transcript_path(sid):
+    host, separator, native = sid.partition("~")
+    if not separator:
+        return STATE.parent / "codex-transcripts" / f"{uuid.UUID(sid)}.jsonl"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", host):
+        raise ValueError("Invalid host")
+    return STATE.parent / "hosts" / host / "codex-transcripts" / f"{uuid.UUID(native)}.jsonl"
 
 
 @app.route("/")
@@ -86,7 +96,7 @@ def codex_bare():
 @app.route("/codex/")
 def codex_index():
     return render_template(
-        "index.html", prefix="/codex", backend_label="Codex sessions on this box"
+        "index.html", prefix="/codex", backend_label="Codex sessions across hosts"
     )
 
 
@@ -124,7 +134,7 @@ def codex_transcript(sid):
     session = find(sid)
     if session is None:
         abort(404)
-    path = STATE.parent / "codex-transcripts" / f"{session['sid']}.jsonl"
+    path = transcript_path(session["sid"])
     if not path.exists():
         return jsonify(items=[], size=0, status=session["status"])
     after = request.args.get("after", type=int, default=0)
