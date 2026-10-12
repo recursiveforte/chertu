@@ -48,8 +48,9 @@ Multi-host Codex routing is implemented over SSH, with separate connections,
 host-scoped discovery, approvals, settings, uploads, worktrees, terminals, and
 dashboard identities. Existing records default to the local host. Regression
 tests exercise host isolation, matching native IDs, offline failure without local
-fallback, remote filesystem operations, routing, and persistence. No MacBook
-connection or desktop computer-use task has been exercised live. Remote Claude,
+fallback, remote filesystem operations, routing, and persistence. The MacBook
+connection has been exercised live as described below; desktop computer use has
+not been exercised. Remote Claude,
 Feldspar, disk/S3 commands, S3 transcript recovery, and `hearth-send` are not
 implemented; see [the exact scope and setup](multi-host.md).
 
@@ -58,6 +59,17 @@ check passed: a project prompt completed on the intended native directory and
 Discord sink, and changing the default harness retained a working existing Codex
 conversation. The test uses a private temporary CODEX_HOME and no production
 Discord messages. Its in-memory channel lookup now covers thread-title updates.
+
+The `macbook` host was subsequently enabled on lemma through authenticated SSH
+to the Mac's existing Codex daemon. Live checks passed for Unix socket forwarding,
+Codex initialization and model listing, remote directory validation, tmux 3.7c,
+and an upload/download round trip whose temporary file was removed. MCP status
+listed the Mac's `computer-use` and `cua_repl` integrations; this does not establish
+that desktop permissions or an actual computer-use task work. No model prompt or
+test thread was sent to production Discord or an existing native conversation.
+After restarting only the bridge, both HTTP health checks returned 200, the
+Discord gateway connected, and existing project bindings and conversation
+mappings were preserved. No Mac project channel was created automatically.
 
 - One Discord connection and command registry; owner/allowlist authorization.
 - Project directory matching for discovery, with the most specific match winning.
