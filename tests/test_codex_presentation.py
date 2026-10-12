@@ -11,10 +11,10 @@ from chert.backends.codex.presentation import (
 
 class PresentationTests(unittest.TestCase):
     def test_original_thread_and_speaker_style(self):
-        session = Session(42, "/code/celeste", prompt_name("is your src on gh?"))
-        self.assertEqual(thread_title(session.name), "🚀 is-your-src-on-gh")
-        self.assertEqual(speaker_name(session), "celeste · is-your-src-on-gh")
-        self.assertEqual(thread_title(session.name, ended=True), "🌌 is-your-src-on-gh")
+        session = Session(42, "/code/celeste", prompt_name("Is your source code on GitHub?"))
+        self.assertEqual(thread_title(session.name), "🚀 Is your source code on GitHub?")
+        self.assertEqual(speaker_name(session), "celeste · Is your source code on GitHub?")
+        self.assertEqual(thread_title(session.name, ended=True), "🌌 Is your source code on GitHub?")
 
     def test_fixed_title_preserves_collision_suffix_and_length_limit(self):
         self.assertEqual(

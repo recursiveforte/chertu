@@ -75,6 +75,11 @@ setup and from Discord uses one implementation.
   in-memory Discord sink; the screenshot style has not been visually verified
   in production Discord. Codex does not claim Claude classifier rerouting.
 - Codex thread titles use 🚀, switching to 💤 after 36 hours without interaction.
+  New prompt-based names preserve readable wording, capitalization, punctuation,
+  and Unicode instead of using a 32-character slug. Whitespace is collapsed and
+  long names end at a word boundary with an ellipsis within Discord's title limit.
+  Existing native names are preserved. Formatting is verified locally; new-thread
+  creation has not been exercised live in production Discord for this change.
   Accepted prompts, thread commands, and native turn activity refresh a persisted
   clock; polling and card refreshes do not. Running turns stay 🚀. Interaction
   restores 🚀, and closing uses 🌌. Names and collision suffixes are preserved.

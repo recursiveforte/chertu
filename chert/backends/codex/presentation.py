@@ -10,7 +10,15 @@ from chert.vendor import bridge as upstream
 
 
 def prompt_name(prompt):
-    return upstream.slug(prompt)
+    """Use readable prompt text, reserving room for the thread's status emoji."""
+    name = " ".join(prompt.split()) or "New conversation"
+    limit = 100 - len(upstream.LIVE_PREFIX) - 1
+    if len(name) <= limit:
+        return name
+    shortened = name[:limit - 1]
+    if " " in shortened:
+        shortened = shortened.rsplit(" ", 1)[0]
+    return shortened.rstrip() + "…"
 
 
 def thread_title(name, ended=False, *, sid="", collides=False, sleeping=False):
