@@ -242,7 +242,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         )
         hook = await self.adapter.webhook_for()
         body = hook.edit_message.call_args.kwargs["content"]
-        self.assertIn("✅ turn done · 0m 32s", body)
+        self.assertEqual(body, "-# ✅ turn done · 0m 32s")
         with patch("chert.backends.codex.presentation.time.time", return_value=time.time() + 500):
             await self.adapter.events.update_live_status(self.session)
         self.assertEqual(hook.edit_message.call_args.kwargs["content"], body)

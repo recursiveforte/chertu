@@ -49,7 +49,9 @@ def activity_text(session, status, started=0, detail="", now=None, workspace=Non
         card["desc"] = detail
     final = status == "idle" and has_turn
     progress = upstream.card_text({"status": status}, card, final=final)
-    progress = progress if final else "\n".join(progress.splitlines()[1:])
+    if final:
+        return progress
+    progress = "\n".join(progress.splitlines()[1:])
     if status == "disconnected":
         progress = "-# live updates unavailable"
     emoji, label = {

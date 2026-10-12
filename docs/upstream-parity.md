@@ -99,6 +99,10 @@ mappings were preserved. No Mac project channel was created automatically.
 - Codex status cards show session/workspace identity, a relative update timestamp,
   model, and dashboard/reply/screen/help shortcuts. Waiting for approval or input
   reads “🔔 needs you”. Tool progress and frozen completion timing are retained.
+  Completed turns collapse to one small line with elapsed time and tool counts,
+  removing the repeated status, session metadata, timestamp, and shortcuts.
+  Regression checks cover the compact completion and frozen timing; this change
+  has not been visually verified in production Discord.
   The same layout is used for launch and discovery. Regression checks use an
   in-memory Discord sink; the screenshot style has not been visually verified
   in production Discord. Codex does not claim Claude classifier rerouting.

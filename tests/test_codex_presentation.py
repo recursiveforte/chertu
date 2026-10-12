@@ -23,11 +23,12 @@ class PresentationTests(unittest.TestCase):
         )
         self.assertLessEqual(len(thread_title("x" * 120)), 100)
 
-    def test_turn_summary_uses_elapsed_time_and_known_model(self):
-        session = Session(42, "/code/celeste", "test", display_model="test-model")
+    def test_turn_summary_collapses_to_elapsed_time_and_tool_counts(self):
+        session = Session(42, "/code/celeste", "test", display_model="test-model",
+                          host="macbook")
+        session.activity = {"counts": {"MCP": 12}, "thought": "Working on it"}
         body = activity_text(session, "idle", 100, now=165)
-        self.assertIn("-# ✅ turn done · 1m 05s", body)
-        self.assertIn("🧠 model `test-model`", body)
+        self.assertEqual(body, "-# ✅ turn done · 1m 05s · 🔧 MCP ×12")
 
     def test_waiting_card_matches_reference_layout_and_codex_link(self):
         session = Session(42, "/code/projects", "reply-with-exactly-ok", "native-id",
