@@ -270,7 +270,7 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("**working**", hook.edit_message.call_args.kwargs["content"])
 
         await self.event("turn/completed", turn={"id": "one", "status": "completed"})
-        self.assertIn("**done**", hook.edit_message.call_args.kwargs["content"])
+        self.assertIn("✅ turn done", hook.edit_message.call_args.kwargs["content"])
         await self.start("two")
         self.adapter.say.assert_awaited_once()
 
