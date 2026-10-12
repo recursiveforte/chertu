@@ -176,17 +176,13 @@ class CodexBackend:
         if session is None:
             return await self.frontend.say(channel, str(text))
         name = speaker_name(session)
-        entries = upstream.format_new_items(
-            [{"kind": "assistant", "text": discord_tables(str(text))}],
-            session.codex_thread or "",
-            include_tools=False,
-        )
+        # The upstream transcript formatter caps replies at five chunks.
+        # Deliver every chunk here so Discord retains the complete Codex reply.
+        chunks = upstream.split_chunks(discord_tables(str(text)))
         message = None
-        for _, content in entries:
-            if content.startswith("-# …truncated — "):
-                content = content.replace(
-                    upstream.DASHBOARD, upstream.DASHBOARD.removesuffix("/claudes") + "/codex"
-                )
+        for index, content in enumerate(chunks, 1):
+            if len(chunks) > 1:
+                content += f"\n-# ⤵ part {index}/{len(chunks)}"
             message = await self.frontend.post_as(
                 await self.parent_channel(channel),
                 name,

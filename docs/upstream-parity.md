@@ -90,6 +90,11 @@ mappings were preserved. No Mac project channel was created automatically.
   Regression checks cover the screenshot's milestone table, escaped/code pipes,
   and long replies through an in-memory webhook. Production Discord rendering has
   not been exercised by these tests; existing posted messages are unchanged.
+  Codex replies send every numbered message instead of the upstream five-message
+  cap and dashboard-only truncation notice. Regression tests reconstruct a reply
+  spanning more than ten messages and verify table rows beyond the old cap,
+  message length limits, and short replies through mocked Discord sends. This
+  behavior has not been exercised end to end in production Discord.
 - Immediate activity cards, tool counts, heartbeat updates, completion timing,
   compaction notices, and reconnect recovery. Raw reasoning deltas are not posted.
   The first turn edits the launch/discovery card in place so it does not leave

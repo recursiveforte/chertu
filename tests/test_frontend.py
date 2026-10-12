@@ -124,21 +124,48 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         hook = SimpleNamespace(send=AsyncMock())
         self.bot.webhook_for = AsyncMock(return_value=hook)
         channel = SimpleNamespace(id=300, parent=self.bot.main_channel)
-        rows = [f"| Milestone {i} | " + "long result " * 8 + "|" for i in range(25)]
+        rows = [f"| Milestone {i} | " + "long result " * 8 + "|" for i in range(125)]
         source = "| Milestone | Required result |\n|---|---|\n" + "\n".join(rows)
         with patch.object(upstream, "avatar_bytes", return_value=None):
             await self.bot.codex.say(channel, source)
         messages = [call.kwargs["content"] for call in hook.send.call_args_list]
-        self.assertGreater(len(messages), 1)
+        self.assertGreater(len(messages), 5)
         self.assertTrue(all(len(content) <= 2000 for content in messages))
         rendered = "\n".join(messages)
-        for i in range(25):
+        for i in range(125):
             self.assertIn(f"**Milestone**: Milestone {i}\n", rendered)
-        self.assertEqual(rendered.count("**Required result**:"), 25)
+        self.assertEqual(rendered.count("**Required result**:"), 125)
         self.assertNotIn("|---|", rendered)
         for call in hook.send.call_args_list:
             self.assertEqual(call.kwargs["thread"].id, 300)
             self.assertIs(call.kwargs["allowed_mentions"], upstream.NO_PING)
+
+    async def test_codex_long_reply_delivers_every_character_in_numbered_messages(self):
+        self.bot.codex.store.sessions[300] = Session(300, self.tmp.name, "test", "native")
+        hook = SimpleNamespace(send=AsyncMock())
+        self.bot.webhook_for = AsyncMock(return_value=hook)
+        channel = SimpleNamespace(id=300, parent=self.bot.main_channel)
+        source = "".join(f"{i:05d}:abcdefghij;" for i in range(1500)) + "END OF REPLY"
+        with patch.object(upstream, "avatar_bytes", return_value=None):
+            result = await self.bot.codex.say(channel, source)
+        messages = [call.kwargs["content"] for call in hook.send.call_args_list]
+        self.assertGreater(len(messages), 10)
+        bodies = []
+        for index, content in enumerate(messages, 1):
+            self.assertLessEqual(len(content), 2000)
+            suffix = f"\n-# ⤵ part {index}/{len(messages)}"
+            self.assertTrue(content.endswith(suffix))
+            bodies.append(content.removesuffix(suffix))
+        self.assertEqual("".join(bodies), source)
+        self.assertIs(result, hook.send.return_value)
+
+    async def test_codex_short_reply_has_no_part_label(self):
+        self.bot.codex.store.sessions[300] = Session(300, self.tmp.name, "test", "native")
+        self.bot.post_as = AsyncMock()
+        channel = SimpleNamespace(id=300, parent=self.bot.main_channel)
+        await self.bot.codex.say(channel, "Complete short reply.")
+        self.bot.post_as.assert_awaited_once()
+        self.assertEqual(self.bot.post_as.call_args.args[2], "Complete short reply.")
 
     async def test_bot_voice_tables_are_formatted_before_sending(self):
         channel = SimpleNamespace(send=AsyncMock())
