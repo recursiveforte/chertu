@@ -6,6 +6,7 @@ Use --projects to check project launches, routing, and harness changes with a re
 isolated Codex runtime and in-memory Discord channels.
 Use --close to verify native closure without resuming history.
 Use --worktrees to check project defaults and both workspace overrides with real Git and Codex.
+Use --fast-default to check project fast defaults with real native settings and inference.
 Use --queue to verify native queuing and Discord prompt reactions.
 Use --queue-steer to promote a queued prompt by clicking its reaction during a real turn.
 Use --rapid-queue to verify five quick replies leave one completed card per turn.
@@ -331,7 +332,7 @@ async def check_rapid_queue(frontend, session, channel, consumer):
             await asyncio.gather(poller, return_exceptions=True)
 
 
-async def check_projects(root, config, consumer_factory, worktrees=False):
+async def check_projects(root, config, consumer_factory, worktrees=False, fast_default=False):
     from chert.projects import Project, ProjectStore
     from chert.discord.frontend import Frontend
 
@@ -375,8 +376,12 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
     frontend.post_as = post_as
     adapter.webhook_for = AsyncMock(return_value=SimpleNamespace(edit_message=AsyncMock()))
     await adapter.live.connect()
+    if fast_default:
+        adapter.live.call = AsyncMock(wraps=adapter.live.call)
     consumer = asyncio.create_task(consumer_factory(adapter))
     try:
+        if fast_default:
+            await frontend.project_commands.set_fast_default(projects.projects["work"], "on")
         if worktrees:
             from test_worktrees import repository
 
@@ -400,6 +405,13 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
             completed_turns[session.codex_thread] = session.turns
 
         await completed()
+        if fast_default:
+            settings = [c.args[1] for c in adapter.live.call.call_args_list
+                        if c.args[0] == "thread/settings/update"]
+            assert settings[-1]["serviceTier"] == "fast", settings
+            assert ProjectStore(projects.path).projects["work"].fast_default is True
+            await frontend.project_commands.set_fast_default(projects.projects["work"], "off")
+            adapter.live.call.reset_mock()
         assert any("CHERT_PROJECT_OK" in m for m in messages), "Reply missing from project thread"
         native = (
             await adapter.live.call(
@@ -442,6 +454,23 @@ async def check_projects(root, config, consumer_factory, worktrees=False):
             "Default harness change persists; existing thread still completes a real Codex turn: PASS",
             flush=True,
         )
+        if fast_default:
+            assert not any(c.args[0] == "thread/settings/update"
+                           for c in adapter.live.call.call_args_list)
+            await frontend.project_commands.set_harness(project, "codex")
+            thread = SimpleNamespace(id=302, parent_id=100, parent=parent, archived=False, mention="<#302>")
+            channels[302] = thread
+            parent.create_thread = AsyncMock(return_value=thread)
+            adapter.live_channel = AsyncMock(return_value=thread)
+            with frontend.project_context(project):
+                await adapter.start_session("Reply exactly CHERT_FAST_OFF_OK. Do not use tools.")
+            session = adapter.store.sessions[302]
+            await completed()
+            settings = [c.args[1] for c in adapter.live.call.call_args_list
+                        if c.args[0] == "thread/settings/update"]
+            assert settings[-1]["serviceTier"] == "default", settings
+            assert any("CHERT_FAST_OFF_OK" in m for m in messages)
+            print("Project fast on/off → native settings accepted and inference completed; existing thread preserved: PASS", flush=True)
         if worktrees:
             await frontend.project_commands.set_harness(project, "codex")
             original_cwd = session.cwd
@@ -496,6 +525,7 @@ async def main(
     queue_check=False,
     queue_steer_check=False,
     rapid_queue_check=False,
+    fast_default_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -539,7 +569,7 @@ async def main(
                 discover=False,
                 live_socket=socket,
             )
-            if project_check or worktree_check:
+            if project_check or worktree_check or fast_default_check:
 
                 async def consume_project(adapter):
                     while True:
@@ -549,7 +579,8 @@ async def main(
                         finally:
                             adapter.live.notifications.task_done()
 
-                await check_projects(root, config, consume_project, worktrees=worktree_check)
+                await check_projects(root, config, consume_project, worktrees=worktree_check,
+                                     fast_default=fast_default_check)
                 return
             frontend = make_frontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
@@ -688,5 +719,6 @@ if __name__ == "__main__":
             queue_check="--queue" in sys.argv,
             queue_steer_check="--queue-steer" in sys.argv,
             rapid_queue_check="--rapid-queue" in sys.argv,
+            fast_default_check="--fast-default" in sys.argv,
         )
     )

@@ -282,6 +282,8 @@ class CodexBackend:
             project_channel=destination.channel_id,
         )
         session.service_tier = self.store.meta.get("service_tier")
+        if not codex_id and destination.fast_default is not None:
+            session.service_tier = "fast" if destination.fast_default else "default"
         self.store.sessions[thread.id] = session
         self.live.subscribed.add(info["id"])
         self.store.save()

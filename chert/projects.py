@@ -16,6 +16,7 @@ class Project:
     archived: bool = False
     worktrees: bool = False
     host: str = "local"
+    fast_default: bool | None = None
 
     def __post_init__(self):
         if self.host == "local":
@@ -28,8 +29,10 @@ class Project:
     @property
     def topic(self):
         workspace = "worktree" if self.worktrees else "project directory"
+        fast = "inherit" if self.fast_default is None else "on" if self.fast_default else "off"
         return (
             f"Project: {self.name} · Host: {self.host} · {self.directory} · New threads: {workspace}"
+            f" · Codex fast default: {fast} (/fast-default)"
             " · /worktrees to change · /worktree or /no-worktree to override"
             " · /harness to choose an agent · /archive or /unarchive"
         )

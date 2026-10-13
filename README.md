@@ -39,6 +39,15 @@ audio prompts, and explicit harness launches follow this setting.
 default harness and override the workspace setting without changing it.
 Existing threads, resumed conversations, and conversation forks keep their directories.
 
+Use `/fast-default mode:on` in a project channel (or one of its threads) to enable
+fast mode for new Codex sessions in that project. `mode:off` explicitly disables
+it; `mode:inherit` restores the host-wide `/fast everywhere:True` default, or
+Codex's own default if none was set. `/fast-default` shows the current setting.
+Changes are owner-only and survive restarts. Plain and audio prompts, explicit
+Codex launches, and worktree launches use the project default. Existing threads,
+resumed conversations, and forks do not acquire the project default; use `/fast`
+inside a thread to change its setting. Codex enforces account/model availability.
+
 Worktrees start on a unique `chert/<id>` branch from the current committed `HEAD`.
 Uncommitted edits, untracked files, and local environment files are not copied.
 The repository must have a commit; non-Git projects can use `/no-worktree`.
@@ -106,7 +115,7 @@ Session commands use the harness recorded for the thread. Project channels selec
 | Projects | `/project name dir [host]`, `/hosts`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
 | Launch | Plain prompt, `/codex`, `/claude`, `/worktree prompt`, `/no-worktree prompt`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
-| Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/mode`, `/yolo`, `/rename` |
+| Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/fast-default [mode]`, `/mode`, `/yolo`, `/rename` |
 | Control | `/stop`, `/close`, `/refresh`, `/restart`, `/revive`, `/kill` |
 | Inspect | `/log`, `/screen`, `/key`, `/download path` (Codex), `/help` |
 | Notifications / budget | `/mute`, `/unmute`, `/supernova` |

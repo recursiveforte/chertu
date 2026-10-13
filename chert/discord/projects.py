@@ -92,8 +92,27 @@ class ProjectCommands:
         )
         if getattr(channel, "topic", None) != project.topic:
             self.channels[project.channel_id] = await channel.edit(
-                topic=project.topic, reason="Update project workspace default"
+                topic=project.topic, reason="Update project defaults"
             )
+
+    async def set_fast_default(self, project, mode):
+        if mode not in {"on", "off", "inherit"}:
+            raise ValueError("Choose on, off, or inherit.")
+        async with self.lock:
+            previous = project.fast_default
+            project.fast_default = {"on": True, "off": False, "inherit": None}[mode]
+            try:
+                self.registry.save()
+            except Exception:
+                project.fast_default = previous
+                raise
+            try:
+                await self.sync_topic(project)
+            except discord.HTTPException as exc:
+                raise ValueError(
+                    "The fast default was saved, but the channel topic could not be updated. "
+                    "Retry /fast-default with the same setting to refresh it."
+                ) from exc
 
     async def set_worktrees(self, project, enabled):
         async with self.lock:
@@ -119,6 +138,48 @@ class ProjectCommands:
                 ) from exc
 
     def install(self):
+        @self.frontend.tree.command(
+            name="fast-default",
+            description="View or set the fast-mode default for new Codex sessions in this project",
+        )
+        @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="on", value="on"),
+            discord.app_commands.Choice(name="off", value="off"),
+            discord.app_commands.Choice(name="inherit", value="inherit"),
+        ])
+        async def fast_default_command(interaction: discord.Interaction, mode: str = ""):
+            if not await self.project_permission(interaction):
+                return
+            project = self.registry.for_channel(interaction.channel)
+            if project is None:
+                return await interaction.response.send_message(
+                    "Use /fast-default in a project channel or its thread.", ephemeral=True
+                )
+            if mode and interaction.user.id != self.frontend.owner:
+                return await interaction.response.send_message(
+                    "/fast-default changes are owner-only.", ephemeral=True
+                )
+            await interaction.response.defer(ephemeral=True)
+            if mode:
+                await self.set_fast_default(project, mode)
+            setting = (
+                "inherit" if project.fast_default is None
+                else "on" if project.fast_default else "off"
+            )
+            inherited = ""
+            if setting == "inherit":
+                tier = self.frontend.codex_for(project=project).store.meta.get("service_tier")
+                inherited = (
+                    f" (host default: {'on' if tier == 'fast' else 'off'})"
+                    if tier else " (Codex's own default)"
+                )
+            await interaction.followup.send(
+                f"New Codex sessions in <#{project.channel_id}> use fast mode **{setting}**{inherited}. "
+                "Set `/fast-default mode:on`, `mode:off`, or `mode:inherit` to change this. "
+                "Existing threads keep their settings; use `/fast` inside a thread to change it.",
+                ephemeral=True,
+            )
+
         @self.frontend.tree.command(name="hosts", description="Show configured execution hosts and their connection status")
         async def hosts_command(interaction: discord.Interaction):
             if not await self.project_permission(interaction):

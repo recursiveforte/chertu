@@ -157,6 +157,21 @@ mappings were preserved. No Mac project channel was created automatically.
 
 ## Verification and limits
 
+Per-project Codex fast defaults are a fork extension. Owner-only
+`/fast-default mode:on|off|inherit` changes new sessions in the current project
+channel, including worktrees; the parameterless command shows the setting.
+Project on/off overrides the host default, and inherit retains the previous
+host/Codex behavior. Settings survive restarts; existing threads, resumes, and
+forks do not acquire the project override. Regression tests cover permissions,
+thread-parent scoping, legacy state, persistence, rollback on write failure,
+on/off/inherit precedence, worktrees, remote host isolation, native queue settings,
+and preservation of existing sessions. On 2026-10-12,
+`tests/live_codex_activity.py --fast-default` passed against an isolated native
+Codex runtime: fast and default service tiers were accepted and completed real
+inference, and changing the project default did not send new settings to an
+existing thread. Discord was an in-memory sink; this does not establish live
+production Discord command invocation or a latency improvement.
+
 Per-project worktrees are a fork extension. Regression checks use real temporary
 Git repositories to verify unique branches, concurrent isolation, dirty source
 preservation, subdirectory projects, non-Git errors, persistence, and project

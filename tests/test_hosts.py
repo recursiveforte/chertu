@@ -188,6 +188,23 @@ class HostRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/remote/upload", result)
         self.assertEqual(self.remote.remote.run.call_args.args, ("upload",))
 
+    async def test_remote_fast_default_uses_project_and_host_scoped_inheritance(self):
+        self.project.fast_default = True
+        self.remote.store.meta["service_tier"] = "default"
+        self.bot.codex.store.meta["service_tier"] = "fast"
+        self.channel.create_thread = AsyncMock(return_value=SimpleNamespace(id=601))
+        self.remote.live.connect = AsyncMock()
+        self.remote.live.call = AsyncMock(return_value={"thread": {"id": "new", "cwd": "/remote/worktree"}})
+        self.remote.say = AsyncMock(return_value=SimpleNamespace(id=900))
+        for setting, expected in ((True, "fast"), (False, "default"), (None, "default")):
+            self.project.fast_default = setting
+            with self.bot.project_context(self.project):
+                await self.remote.start_session("", cwd=Path("/remote/worktree"))
+            session = self.remote.store.sessions[601]
+            self.assertEqual(session.project_channel, 500)
+            self.assertEqual(session.service_tier, expected)
+        self.assertNotIn(601, self.bot.codex.store.sessions)
+
     async def test_remote_host_commands_and_claude_cannot_touch_local_host(self):
         self.bot.handle_main_command = AsyncMock()
         for command in ("disk", "backup", "s3", "offload", "restore", "feldspar"):
