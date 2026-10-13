@@ -31,6 +31,7 @@ class CodexEvents:
         self.backend = backend
         self.event_locks = {}
         self.card_locks = {}
+        self.shown_requests = set()
 
     def record(self, session, kind, text, key=None, tool_id=None, error=False):
         if key and key in session.journal_seen:
@@ -810,6 +811,9 @@ class CodexEvents:
         from chert.discord.prompts import request_view
 
         key = event.get("requestKey")
+        self.shown_requests.intersection_update(self.backend.live.server_requests)
+        if key in self.shown_requests:
+            return
         request = self.backend.live.server_requests.get(key)
         if request:
             session.status = "waiting"
@@ -826,6 +830,7 @@ class CodexEvents:
                     everyone=False,
                 ),
             )
+            self.shown_requests.add(key)
 
     async def run(self):
         await self.backend.wait_until_ready()

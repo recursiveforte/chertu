@@ -6,6 +6,23 @@ from jsonschema import validators
 from referencing import Registry
 
 
+def form_validator(schema):
+    # An empty registry deliberately disables network retrieval of schema refs.
+    return validators.validator_for(schema)(schema, registry=Registry())
+
+
+def confirmation_schema(schema):
+    """Only offer a fieldless confirmation when {} satisfies the whole schema."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return False
+    if schema.get("properties"):
+        return False
+    try:
+        return form_validator(schema).is_valid({})
+    except Exception:
+        return False
+
+
 class PromptView(discord.ui.View):
     def __init__(self, adapter, key):
         super().__init__(timeout=None)
@@ -76,6 +93,8 @@ class FormModal(discord.ui.Modal):
             )
         for name, prop in self.fields:
             hint = prop.get("description") or str(prop.get("enum") or prop.get("type") or "")
+            if prop.get("type") == "boolean" or "boolean" in (prop.get("type") or []):
+                hint = "Yes or no. " + hint
             self.add_item(
                 discord.ui.TextInput(
                     label=(prop.get("title") or name)[:45],
@@ -99,7 +118,17 @@ class FormModal(discord.ui.Modal):
                 kind = prop.get("type", "string")
                 if isinstance(kind, list):
                     kind = next((v for v in kind if v != "null"), "string")
-                self.answers[name] = field.value if kind == "string" else json.loads(field.value)
+                if kind == "string":
+                    value = field.value
+                elif kind == "boolean" and field.value.strip().lower() in {"yes", "no", "true", "false"}:
+                    value = field.value.strip().lower() in {"yes", "true"}
+                else:
+                    try:
+                        value = json.loads(field.value)
+                    except json.JSONDecodeError:
+                        hint = "yes or no" if kind == "boolean" else f"a valid {kind} value"
+                        raise ValueError(f"{prop.get('title') or name}: enter {hint}.") from None
+                self.answers[name] = value
             offset = self.offset + len(self.fields)
             if not self.raw and offset < len(self.schema.get("properties", {})):
                 view = PromptView(self.adapter, self.key)
@@ -115,10 +144,7 @@ class FormModal(discord.ui.Modal):
                 return await interaction.response.send_message(
                     "More fields remain.", view=view, ephemeral=True
                 )
-            # An empty registry deliberately disables network retrieval of schema refs.
-            validators.validator_for(self.schema)(self.schema, registry=Registry()).validate(
-                self.answers
-            )
+            form_validator(self.schema).validate(self.answers)
             await self.adapter.live.answer(self.key, {"action": "accept", "content": self.answers})
         except Exception as exc:
             return await interaction.response.send_message(
@@ -172,15 +198,19 @@ def request_view(adapter, key, request):
         view.add_item(button)
     elif method == "mcpServer/elicitation/request":
         if params.get("mode") in {"form", "openai/form", "openaiForm"}:
-            button = discord.ui.Button(label="Fill form", style=discord.ButtonStyle.primary)
-
-            async def form(interaction):
-                await interaction.response.send_modal(
-                    FormModal(adapter, key, params["requestedSchema"])
+            schema = params["requestedSchema"]
+            if confirmation_schema(schema):
+                view.decision(
+                    "Allow", {"action": "accept", "content": {}}, discord.ButtonStyle.success
                 )
+            else:
+                button = discord.ui.Button(label="Fill form", style=discord.ButtonStyle.primary)
 
-            button.callback = form
-            view.add_item(button)
+                async def form(interaction):
+                    await interaction.response.send_modal(FormModal(adapter, key, schema))
+
+                button.callback = form
+                view.add_item(button)
         elif params.get("mode") == "url":
             url = params.get("url", "")
             if url.startswith(("https://", "http://")):

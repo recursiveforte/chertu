@@ -126,6 +126,14 @@ mappings were preserved. No Mac project channel was created automatically.
   Discord rename rate limits may delay the visible change.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
+  Fieldless MCP object forms offer Allow/Decline/Cancel when an empty response
+  satisfies the schema, avoiding the raw JSON editor for confirmation prompts.
+  Boolean form fields accept yes/no as well as JSON true/false, with schema
+  validation retained. Repeated delivery of the same connection-scoped request
+  posts once; distinct requests remain separate. Regression tests exercise clicks,
+  permissions, validation, duplicate delivery, and retry after a failed Discord
+  send using mocks. These changes have not been exercised end to end with a live
+  Computer Use permission request in production Discord.
 - A parameterless `/model` picker; selected model/effort settings persist until
   the next accepted prompt. Queued prompts apply pending settings through native
   `thread/settings/update`, without modifying the active turn.
