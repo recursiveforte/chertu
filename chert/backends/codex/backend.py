@@ -90,6 +90,7 @@ class CodexBackend:
         self.frontend, self.config, self.options, self.store = frontend, config, options, store
         from chert.hosts import RemoteHost
         self.host_name = host.name if host else "local"
+        self.default_yolo = host.yolo if host else False
         self.remote = RemoteHost(host) if host and host.ssh else None
         self.main_channel = None
         self.owner = config.owner_id
@@ -192,6 +193,14 @@ class CodexBackend:
             )
         return message
 
+    def start_permissions(self):
+        if self.default_yolo or self.store.meta.get("yolo_until", 0) > time.time():
+            return {"approvalPolicy": "never", "sandbox": "danger-full-access"}
+        params = {"approvalPolicy": "on-request", "sandbox": self.options.sandbox}
+        if upstream.PERMISSION_MODE == "auto":
+            params["approvalsReviewer"] = "auto_review"
+        return params
+
     async def _start_session(self, prompt, *, codex_id=None, source_message=None, cwd=None):
         current = self.frontend.current_project
         if current and not codex_id and cwd is None:
@@ -228,14 +237,9 @@ class CodexBackend:
             cwd = Path(cwd) if self.remote else Path(cwd).expanduser().resolve()
             params = {
                 "cwd": str(cwd),
-                "approvalPolicy": "on-request",
-                "sandbox": self.options.sandbox,
+                **self.start_permissions(),
                 "config": {"sandbox_workspace_write.network_access": self.options.network},
             }
-            if upstream.PERMISSION_MODE == "auto":
-                params["approvalsReviewer"] = "auto_review"
-            if self.store.meta.get("yolo_until", 0) > time.time():
-                params.update(approvalPolicy="never", sandbox="danger-full-access")
             model = self.store.meta.get("model", self.config.model)
             if model:
                 params["model"] = model
@@ -282,6 +286,8 @@ class CodexBackend:
             project_channel=destination.channel_id,
         )
         session.service_tier = self.store.meta.get("service_tier")
+        if not codex_id and params["approvalPolicy"] == "never":
+            session.permission_mode = "bypass"
         if not codex_id and destination.fast_default is not None:
             session.service_tier = "fast" if destination.fast_default else "default"
         self.store.sessions[thread.id] = session
@@ -391,8 +397,7 @@ class CodexBackend:
                         "thread/start",
                         {
                             "cwd": session.cwd,
-                            "approvalPolicy": "on-request",
-                            "sandbox": self.options.sandbox,
+                            **self.start_permissions(),
                         },
                     )
                     session.codex_thread = result["thread"]["id"]

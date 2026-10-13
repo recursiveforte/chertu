@@ -19,8 +19,11 @@ class Host:
     codex: str = "codex"
     runtime: str = "~/.local/share/chert"
     path: str = ""
+    yolo: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.yolo, bool):
+            raise ValueError("Host yolo must be a boolean.")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", self.name):
             raise ValueError("Host names must use 1–32 lowercase letters, numbers, - or _.")
         if self.name != "local" and not self.ssh:

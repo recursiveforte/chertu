@@ -72,6 +72,7 @@ class HostStateTests(unittest.TestCase):
             dict(name="mac", ssh="mac -v", socket="/tmp/a"),
             dict(name="mac", ssh="mac", socket="~/codex.sock"),
             dict(name="mac", ssh="mac", socket="/tmp/a:b"),
+            dict(name="mac", ssh="mac", socket="/tmp/a", yolo="false"),
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 Host(**values)
@@ -204,6 +205,67 @@ class HostRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.project_channel, 500)
             self.assertEqual(session.service_tier, expected)
         self.assertNotIn(601, self.bot.codex.store.sessions)
+
+    async def test_host_yolo_applies_to_new_threads_and_not_resumed_or_local_threads(self):
+        from chert.backends.codex.backend import CodexBackend
+        self.remote = CodexBackend(
+            self.bot.config, CodexOptions(), self.remote.store, self.bot,
+            Host("macbook", ssh="macbook", socket="/tmp/codex.sock", yolo=True),
+        )
+        self.channel.create_thread = AsyncMock(return_value=SimpleNamespace(id=601))
+        self.remote.live.connect = AsyncMock()
+        self.remote.live.call = AsyncMock(return_value={"thread": {"id": SID, "cwd": self.project.directory}})
+        self.remote.say = AsyncMock(return_value=SimpleNamespace(id=900))
+        with self.bot.project_context(self.project):
+            await self.remote.start_session("", cwd=Path(self.project.directory))
+        params = self.remote.live.call.call_args_list[0].args[1]
+        self.assertEqual(params["approvalPolicy"], "never")
+        self.assertEqual(params["sandbox"], "danger-full-access")
+        self.assertNotIn("approvalsReviewer", params)
+        self.assertEqual(self.remote.store.sessions[601].permission_mode, "bypass")
+        self.assertEqual(self.bot.codex.start_permissions()["approvalPolicy"], "on-request")
+        self.remote.store.sessions.clear()
+        self.remote.live.call.reset_mock()
+        with self.bot.project_context(self.project):
+            await self.remote.start_session("", codex_id=SID)
+        self.remote.live.call.assert_any_await("thread/resume", {"threadId": SID, "excludeTurns": True})
+
+    async def test_host_yolo_applies_when_creating_legacy_native_thread(self):
+        self.remote.default_yolo = True
+        session = self.remote.store.sessions[600]
+        session.codex_thread = None
+        self.remote.live.connect = AsyncMock()
+        self.remote.live.attach = AsyncMock()
+        self.remote.live.call = AsyncMock(return_value={"thread": {"id": SID}})
+        await self.remote.ensure_live(session)
+        params = self.remote.live.call.call_args.args[1]
+        self.assertEqual(params["approvalPolicy"], "never")
+        self.assertEqual(params["sandbox"], "danger-full-access")
+
+    async def test_yolo_off_reports_persistent_host_default(self):
+        self.remote.default_yolo = True
+        self.remote.events.note_interaction = AsyncMock()
+        respond = AsyncMock()
+        await self.remote.controls.execute("yolo", self.thread, SimpleNamespace(id=7), {"duration": "off"}, respond)
+        self.assertEqual(self.remote.store.meta["yolo_until"], 0)
+        self.assertIn("remains enabled", respond.call_args.args[0])
+        self.assertEqual(self.remote.start_permissions()["approvalPolicy"], "never")
+
+    async def test_mode_updates_loaded_native_thread_without_starting_a_turn(self):
+        self.remote.ensure_live = AsyncMock()
+        self.remote.live.call = AsyncMock()
+        session = self.remote.store.sessions[600]
+        for mode, policy, sandbox in (("bypass", "never", "dangerFullAccess"),
+                                      ("default", "on-request", "workspaceWrite"),
+                                      ("auto", "on-request", "workspaceWrite")):
+            self.remote.live.call.reset_mock()
+            await self.remote.controls.set_mode(session, mode)
+            self.remote.live.call.assert_awaited_once()
+            method, params = self.remote.live.call.call_args.args
+            self.assertEqual(method, "thread/settings/update")
+            self.assertEqual(params["approvalPolicy"], policy)
+            self.assertEqual(params["sandboxPolicy"]["type"], sandbox)
+            self.assertEqual(session.permission_mode, mode)
 
     async def test_remote_host_commands_and_claude_cannot_touch_local_host(self):
         self.bot.handle_main_command = AsyncMock()

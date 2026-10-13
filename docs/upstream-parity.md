@@ -71,6 +71,16 @@ After restarting only the bridge, both HTTP health checks returned 200, the
 Discord gateway connected, and existing project bindings and conversation
 mappings were preserved. No Mac project channel was created automatically.
 
+On 2026-10-13, per-host `yolo` defaults were added for new Chert threads, and
+`/mode` was corrected to update loaded native threads through
+`thread/settings/update`; `thread/resume` ignores those overrides once loaded.
+The isolated `tests/live_codex_activity.py --yolo` check verifies native YOLO
+settings and actual tool execution. The four open production MacBook threads'
+YOLO settings were read back successfully after updating them through the native
+API. Settings changes apply to subsequent turns: an approval already pending in
+an active turn is not automatically answered. No test prompts were sent to those
+conversations or production Discord.
+
 - One Discord connection and command registry; owner/allowlist authorization.
 - Project directory matching for discovery, with the most specific match winning.
 - Per-session webhook identities, upstream message formatting, attachments, and

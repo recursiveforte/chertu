@@ -10,6 +10,7 @@ Use --fast-default to check project fast defaults with real native settings and 
 Use --queue to verify native queuing and Discord prompt reactions.
 Use --queue-steer to promote a queued prompt by clicking its reaction during a real turn.
 Use --rapid-queue to verify five quick replies leave one completed card per turn.
+Use --yolo to verify host YOLO permissions and tool execution in an isolated runtime.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -526,6 +527,7 @@ async def main(
     queue_steer_check=False,
     rapid_queue_check=False,
     fast_default_check=False,
+    yolo_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -584,20 +586,24 @@ async def main(
                 return
             frontend = make_frontend(config, CodexOptions(), SessionStore(config.state_file), 0)
             adapter = frontend.codex
+            adapter.default_yolo = yolo_check
             live = adapter.live
             await live.connect()
             response = await live.call(
                 "thread/start",
                 {
                     "cwd": str(project),
-                    "approvalPolicy": "on-request",
-                    "sandbox": "workspace-write",
+                    **adapter.start_permissions(),
                     # Native queued submissions need persisted history; the
                     # entire isolated home is removed after every check.
                     "ephemeral": False,
                 },
             )
             sid = response["thread"]["id"]
+            if yolo_check:
+                assert response["approvalPolicy"] == "never", response["approvalPolicy"]
+                assert response["sandbox"]["type"] == "dangerFullAccess", response["sandbox"]
+                print("Native host YOLO permissions: PASS", flush=True)
             live.subscribed.add(sid)
             session = Session(
                 300,
@@ -692,6 +698,15 @@ async def main(
                     flush=True,
                 )
                 print("Final card:", edits[-1], flush=True)
+                if yolo_check:
+                    for mode, policy, sandbox in (("default", "on-request", "workspaceWrite"),
+                                                  ("auto", "on-request", "workspaceWrite"),
+                                                  ("bypass", "never", "dangerFullAccess")):
+                        await adapter.controls.set_mode(session, mode)
+                        actual = await live.call("thread/resume", {"threadId": sid, "excludeTurns": True})
+                        assert actual["approvalPolicy"] == policy, actual["approvalPolicy"]
+                        assert actual["sandbox"]["type"] == sandbox, actual["sandbox"]
+                    print("Loaded native thread permission switching: PASS", flush=True)
             finally:
                 consumer.cancel()
                 ticker.cancel()
@@ -720,5 +735,6 @@ if __name__ == "__main__":
             queue_steer_check="--queue-steer" in sys.argv,
             rapid_queue_check="--rapid-queue" in sys.argv,
             fast_default_check="--fast-default" in sys.argv,
+            yolo_check="--yolo" in sys.argv,
         )
     )

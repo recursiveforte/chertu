@@ -122,6 +122,8 @@ class CodexControls:
                 raise ValueError("Use a duration such as 30m or 1h (at most 12h), or off.")
             self.backend.store.meta["yolo_until"] = time.time() + seconds if seconds else 0
             self.backend.store.save()
+            if self.backend.default_yolo:
+                return await respond("This host's configured YOLO default remains enabled for new sessions.")
             return await respond(
                 "Bypass for new Codex sessions enabled until the countdown expires."
                 if seconds
@@ -459,13 +461,13 @@ class CodexControls:
 
     async def set_mode(self, session, mode):
         await self.backend.ensure_live(session)
-        params = {"threadId": session.codex_thread, "excludeTurns": True}
+        params = {"threadId": session.codex_thread}
         if mode == "bypass":
-            params.update(approvalPolicy="never", sandbox="danger-full-access")
+            params.update(approvalPolicy="never", sandboxPolicy={"type": "dangerFullAccess"})
         elif mode in {"auto", "default"}:
             params.update(
                 approvalPolicy="on-request",
-                sandbox="workspace-write",
+                sandboxPolicy={"type": "workspaceWrite", "networkAccess": self.backend.options.network},
                 approvalsReviewer="auto_review" if mode == "auto" else "user",
             )
         elif mode == "plan":
@@ -475,7 +477,8 @@ class CodexControls:
             return
         else:
             raise ValueError("Choose default, auto, bypass, or plan.")
-        await self.backend.live.call("thread/resume", params)
+        # Resume overrides are ignored for an already-loaded native thread.
+        await self.backend.live.call("thread/settings/update", params)
         session.collaboration_mode = "default"
         session.permission_mode = mode
         self.backend.store.save()

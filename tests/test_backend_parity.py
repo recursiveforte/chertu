@@ -141,12 +141,11 @@ class BackendParityTests(unittest.IsolatedAsyncioTestCase):
         await self.execute("mode", mode="default")
         self.assertEqual(self.session.collaboration_mode, "default")
         self.adapter.live.call.assert_awaited_with(
-            "thread/resume",
+            "thread/settings/update",
             {
                 "threadId": SID,
-                "excludeTurns": True,
                 "approvalPolicy": "on-request",
-                "sandbox": "workspace-write",
+                "sandboxPolicy": {"type": "workspaceWrite", "networkAccess": False},
                 "approvalsReviewer": "user",
             },
         )

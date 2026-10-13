@@ -36,6 +36,13 @@ operation; installing Chert's Python dependencies on the Mac is unnecessary.
 Homebrew). `runtime` defaults to `~/.local/share/chert` on the remote account and
 contains its attachments and managed worktrees.
 
+Set `"yolo": true` on a host in `private/hosts.json` to start its new Chert
+threads with `approvalPolicy=never` and `sandbox=danger-full-access`. This
+host default persists across bridge restarts and does not expire with `/yolo`;
+`/yolo off` only clears the temporary override. Omitted or false preserves the
+normal defaults. Existing or discovered native threads keep their permissions;
+use `/mode bypass` on those threads to change them as well.
+
 The bridge forwards the private Codex Unix socket through SSH into a private
 temporary directory on lemma. It does not expose Codex on a public TCP port or
 disable SSH host-key verification. Allow Unix socket forwarding on the SSH server.
