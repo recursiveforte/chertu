@@ -74,7 +74,10 @@ Mac before considering it verified.
 - Uploads are copied to the selected host before the prompt is submitted.
   `/download path:…` sends a file from the current Codex session's host back to
   Discord. Relative paths start at the session's working directory. Remote
-  transfers are limited to 25 MB. `hearth-send` remains gateway-local.
+  transfers are limited to 25 MB. Explicit Markdown image links in Codex replies
+  also upload from the session's host automatically, for example
+  `![Product picture](/tmp/product.jpg)`. Tool screenshots must first be saved
+  and included as reply image links. `hearth-send` remains gateway-local.
 - Remote hosts support Codex. Claude, cross-harness handoffs, Feldspar, and the
   disk/S3 commands remain local; remote requests reject these operations.
   Remote native history is available through Codex; gateway S3 recovery does not

@@ -332,7 +332,8 @@ class CodexEvents:
                         key,
                     )
                 # imageView means the agent inspected a local image, not that it
-                # requested an upload. File delivery is explicit via hearth-send.
+                # requested an upload. Delivery uses explicit reply image links
+                # or hearth-send, never incidental tool observations.
                 if item.get("type") in {
                     "agentMessage",
                     "commandExecution",
@@ -398,7 +399,9 @@ class CodexEvents:
                 or key in session.seen_live_items
             ):
                 return
-            await self.backend.say(await self.backend.live_channel(session), item["text"])
+            from chert.backends.codex.images import send_reply
+
+            await send_reply(self.backend, session, key, item["text"])
             session.seen_live_items = (session.seen_live_items + [key])[-256:]
             self.backend.store.save()
         elif event["method"] == "turn/completed":

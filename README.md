@@ -66,7 +66,7 @@ The [parity audit](docs/upstream-parity.md) inventories every upstream command, 
 - Automatic session discovery, attached threads, per-session webhook identities and avatars.
 - The upstream session controls: history/search/resume, forks, rename, model/effort/fast, permission modes, stop/restart/revive, mute and countdowns.
 - Approval buttons and user-input forms. Codex uses native approval responses; Claude retains upstream's terminal menus.
-- Uploads, opened images, and `hearth-send` file delivery.
+- Uploads, explicit reply image attachments from local/remote hosts, and `hearth-send` file delivery.
 - Durable session mappings, backup recovery and native reboot revival.
 - The upstream Signalscope dashboard for both backends, plus shared disk/S3 tools.
 

@@ -11,10 +11,12 @@ Use --queue to verify native queuing and Discord prompt reactions.
 Use --queue-steer to promote a queued prompt by clicking its reaction during a real turn.
 Use --rapid-queue to verify five quick replies leave one completed card per turn.
 Use --yolo to verify host YOLO permissions and tool execution in an isolated runtime.
+Use --images to verify a native picture request reaches the Discord attachment sink.
 No Discord token, production daemon, or production conversation is used.
 """
 
 import asyncio
+import base64
 import os
 from pathlib import Path
 import shutil
@@ -31,6 +33,32 @@ from chert.config import CodexOptions
 from chert.backends.codex.state import Session, SessionStore
 from chert.config import Config
 from support import make_frontend
+
+
+async def check_images(adapter, session, channel, consumer):
+    data = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9uoAAAAASUVORK5CYII="
+    )
+    (Path(session.cwd) / "picture.png").write_bytes(data)
+    uploaded = []
+
+    async def send(*args, **kwargs):
+        file = kwargs.get("file")
+        if file:
+            uploaded.append((file.filename, file.fp.read()))
+        return SimpleNamespace(id=901)
+
+    channel.send = send
+    await adapter.send_prompt(channel, "Send me picture.png from the current directory.")
+    async with asyncio.timeout(120):
+        while not session.turns and session.status not in {"error", "interrupted"}:
+            if consumer.done():
+                await consumer
+            await asyncio.sleep(0.1)
+    await adapter.live.notifications.join()
+    assert session.status == "idle", f"Picture request failed: {session.status}"
+    assert uploaded == [("picture.png", data)], f"Expected one picture; got {len(uploaded)}"
+    print("Native picture request → explicit reply image → Discord attachment bytes: PASS", flush=True)
 
 
 async def check_model(frontend, session, channel, consumer):
@@ -528,6 +556,7 @@ async def main(
     rapid_queue_check=False,
     fast_default_check=False,
     yolo_check=False,
+    images_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -650,6 +679,9 @@ async def main(
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if images_check:
+                    await check_images(adapter, session, channel, consumer)
+                    return
                 if rapid_queue_check:
                     await check_rapid_queue(frontend, session, channel, consumer)
                     return
@@ -736,5 +768,6 @@ if __name__ == "__main__":
             rapid_queue_check="--rapid-queue" in sys.argv,
             fast_default_check="--fast-default" in sys.argv,
             yolo_check="--yolo" in sys.argv,
+            images_check="--images" in sys.argv,
         )
     )

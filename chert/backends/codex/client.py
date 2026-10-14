@@ -237,7 +237,10 @@ class LiveCodex:
     async def submit(self, session, prompt, *, queue=False, client_id=None):
         await self.connect()
         await self.attach(session.codex_thread)
-        inputs = [{"type": "text", "text": prompt}]
+        from chert.backends.codex.images import DELIVERY_CONTEXT
+
+        inputs = [{"type": "text", "text": prompt},
+                  {"type": "text", "text": DELIVERY_CONTEXT}]
         turn_id = await self.active_turn(session.codex_thread)
         if turn_id and not queue:
             await self.call(

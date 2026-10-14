@@ -146,6 +146,24 @@ class HostRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.bot.codex_for(self.thread)
         self.bot.codex_hosts["macbook"] = self.remote
 
+    async def test_reply_image_uses_remote_thread_when_native_ids_match(self):
+        self.remote.remote.run = AsyncMock(return_value={
+            "name": "picture.png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode(),
+        })
+        self.remote.live_channel = AsyncMock(return_value=self.thread)
+        self.remote.say = AsyncMock()
+        self.thread.send = AsyncMock()
+        self.bot.codex.live_channel = AsyncMock()
+        await self.remote.events.handle_live_event({"method": "item/completed", "params": {
+            "threadId": SID, "turnId": "turn", "item": {
+                "id": "reply", "type": "agentMessage", "text": "![Picture](/tmp/picture.png)",
+            },
+        }})
+        self.remote.remote.run.assert_awaited_once_with(
+            "download", path="/tmp/picture.png", cwd=self.project.directory)
+        self.thread.send.assert_awaited_once()
+        self.bot.codex.live_channel.assert_not_called()
+
     async def test_commands_reactions_and_model_picker_use_remote_connection(self):
         self.bot.codex.controls.execute = AsyncMock()
         self.remote.controls.execute = AsyncMock()

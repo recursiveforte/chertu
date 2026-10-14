@@ -86,10 +86,21 @@ conversations or production Discord.
 - Per-session webhook identities, upstream message formatting, attachments, and
   `hearth-send` file delivery.
   Codex image inspection does not automatically upload the viewed file to Discord;
-  outgoing files use explicit delivery. Regression tests verify that `imageView`
-  events do not echo uploads or other local images and that explicit image delivery
-  still targets the session. Discord sends are mocked; this has not been exercised
-  end to end in production Discord.
+  outgoing files use explicit delivery. Codex reply image links such as
+  `![caption](/tmp/picture.png)` upload the image from the session's host to its
+  Discord thread; public HTTP(S) image links become Discord image embeds.
+  Local, relative, `sandbox:`, and local `file:` paths support PNG/JPEG/GIF/WebP
+  up to 25 MB (or the configured lower upload limit). Code examples and ordinary
+  file links are not uploaded. Each new Discord prompt includes delivery context
+  so existing conversations know to save and link requested pictures/screenshots.
+  Incidental `imageView` events and MCP screenshots remain private tool observations.
+  Regression tests cover local/remote delivery, missing/invalid/oversized images,
+  muted sessions, public embeds, and replay without repeating successful uploads.
+  `tests/live_codex_activity.py --images` passed with an isolated native runtime:
+  a plain picture request produced a reply image link and the expected attachment
+  bytes. A real MacBook notebook image also passed SSH download through the reply
+  handler into an in-memory Discord sink. These checks do not establish an actual
+  production Discord upload or live browser-screenshot saving.
   The frontend replaces case-insensitive `discord` with `chat` in outgoing
   webhook usernames to prevent Discord's reserved-name HTTP 400 errors. Session
   titles and avatar seeds are preserved. Regression tests exercise the outgoing

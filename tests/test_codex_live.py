@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 from aiohttp import web
 
+from chert.backends.codex.images import DELIVERY_CONTEXT
 from chert.backends.codex.state import Session
 from chert.backends.codex.client import LiveCodex, RpcError, discoverable
 
@@ -111,7 +112,8 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
             call["params"],
             {
                 "threadId": "first",
-                "input": [{"type": "text", "text": "hello"}],
+                "input": [{"type": "text", "text": "hello"},
+                          {"type": "text", "text": DELIVERY_CONTEXT}],
                 "model": "example-model",
                 "effort": "high",
             },
@@ -243,7 +245,8 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
                     "thread/queue/add",
                     {
                         "threadId": "first",
-                        "input": [{"type": "text", "text": "later"}],
+                        "input": [{"type": "text", "text": "later"},
+                                  {"type": "text", "text": DELIVERY_CONTEXT}],
                         "clientUserMessageId": "chert:123",
                     },
                 )
