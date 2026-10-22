@@ -24,6 +24,7 @@ from chert.backends.codex.reactions import PromptReactions
 from chert.backends.codex.presentation import activity_text, prompt_name, speaker_name, thread_title
 
 LOG = logging.getLogger(__name__)
+THREAD_INACTIVITY_SECONDS = 7 * 24 * 60 * 60
 
 
 class CodexBackend:
@@ -494,6 +495,54 @@ class CodexBackend:
             )
         return "Session ended and Discord thread closed."
 
+    async def archive_inactive_thread(self, session):
+        """Close quiet Discord threads without ending their native conversations."""
+        def inactive():
+            return (
+                session.status not in {"running", "waiting", "ended"}
+                and not session.active_turn
+                and not session.delivery_failed
+                and not self.events.notifications_pending(session)
+                and time.time() - max(session.last_interaction_at, session.last_completed_at)
+                >= THREAD_INACTIVITY_SECONDS
+            )
+
+        if not inactive():
+            return
+        async with (
+            self.events.event_locks.setdefault(session.codex_thread, asyncio.Lock()),
+            self.events.card_locks.setdefault(session.discord_thread, asyncio.Lock()),
+        ):
+            if not inactive():
+                return
+            # Fetch current Discord metadata: cached last-message IDs may be stale
+            # after downtime. Do not use live_channel, which reopens archived threads.
+            thread = await self.fetch_channel(session.discord_thread)
+            if thread.archived:
+                return
+            last_activity = max(session.last_interaction_at, session.last_completed_at)
+            if thread.last_message_id:
+                last_activity = max(
+                    last_activity, discord.utils.snowflake_time(thread.last_message_id).timestamp()
+                )
+            if thread.archive_timestamp:
+                last_activity = max(last_activity, thread.archive_timestamp.timestamp())
+            if time.time() - last_activity < THREAD_INACTIVITY_SECONDS:
+                return
+            # Confirm native activity before archiving, even if discovery is behind.
+            # A failed read leaves the thread open for the next maintenance pass.
+            info = (await self.live.call(
+                "thread/read", {"threadId": session.codex_thread, "includeTurns": False}
+            ))["thread"]
+            if (info.get("status") or {}).get("type") == "active":
+                return
+            if time.time() - (info.get("updatedAt") or 0) < THREAD_INACTIVITY_SECONDS:
+                return
+            if not inactive():
+                return
+            await thread.edit(archived=True, reason="Seven days of inactivity")
+            LOG.info("Archived inactive Discord thread %s", session.discord_thread)
+
     async def maintenance(self):
         await self.wait_until_ready()
         boot = upstream.boot_id()
@@ -513,6 +562,11 @@ class CodexBackend:
                 if time.time() >= title_check_at:
                     title_check_at = time.time() + 60
                     for session in list(self.store.sessions.values()):
+                        try:
+                            async with asyncio.timeout(20):
+                                await self.archive_inactive_thread(session)
+                        except Exception:
+                            LOG.exception("Could not archive inactive thread %s", session.discord_thread)
                         try:
                             await self.events.update_thread_title(session)
                         except Exception:

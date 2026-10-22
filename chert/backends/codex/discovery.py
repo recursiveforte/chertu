@@ -79,7 +79,7 @@ class CodexDiscovery:
                         thread = await parent.create_thread(
                             name=thread_title(title),
                             type=discord.ChannelType.public_thread,
-                            auto_archive_duration=1440,
+                            auto_archive_duration=10080,
                         )
                         session = Session(
                             thread.id,

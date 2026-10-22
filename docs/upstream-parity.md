@@ -135,6 +135,15 @@ conversations or production Discord.
   in-memory Discord sink; the screenshot style has not been visually verified
   in production Discord. Codex does not claim Claude classifier rerouting.
 - Codex thread titles keep 🚀 regardless of inactivity; closing uses 🌌.
+  A minute-by-minute maintenance check archives Discord threads after seven days
+  without Discord messages or native activity, including existing threads on all
+  configured Codex hosts. Running turns, pending delivery, and recently reopened
+  threads are left alone. This automatic archive preserves the native conversation
+  and Discord mapping; fresh activity can reopen the thread. Native read failures
+  leave it open for retry. Discovered threads now use the same seven-day Discord
+  visibility setting as newly launched threads. Regression tests exercise the
+  cutoff and activity safeguards; automatic archiving has not yet been exercised
+  live in production Discord.
   New prompt-based names preserve readable wording, capitalization, punctuation,
   and Unicode instead of using a 32-character slug. Whitespace is collapsed and
   long names end at a word boundary with an ellipsis within Discord's title limit.
