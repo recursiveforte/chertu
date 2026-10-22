@@ -21,11 +21,11 @@ def prompt_name(prompt):
     return shortened.rstrip() + "…"
 
 
-def thread_title(name, ended=False, *, sid="", collides=False, sleeping=False):
+def thread_title(name, ended=False, *, sid="", collides=False):
     title = upstream.thread_title(name, sid, collides)
     if ended:
         return upstream.ended_title(title)
-    return title.replace(upstream.LIVE_PREFIX, "💤", 1) if sleeping else title
+    return title
 
 
 def speaker_name(session):

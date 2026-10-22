@@ -15,7 +15,6 @@ from chert.vendor import bridge as upstream
 from chert.backends.codex.client import live_status
 
 LOG = logging.getLogger(__name__)
-THREAD_IDLE_SECONDS = 36 * 60 * 60
 
 TOOL_NAMES = {
     "commandExecution": "Bash",
@@ -600,8 +599,8 @@ class CodexEvents:
             await self.update_thread_title(session)
         except (discord.HTTPException, OSError):
             # A cosmetic rename failure must not fail an accepted prompt/command.
-            # Maintenance will retry using the persisted interaction timestamp.
-            LOG.warning("Could not wake thread title for %s", session.codex_thread, exc_info=True)
+            # Maintenance will retry the title refresh.
+            LOG.warning("Could not refresh thread title for %s", session.codex_thread, exc_info=True)
 
     async def observe_session(self, session, info):
         if session.status == "ended":
@@ -626,7 +625,7 @@ class CodexEvents:
 
         if session.status == "ended":
             return
-        # A display-only idle check must not reopen an archived thread.
+        # A display-only title refresh must not reopen an archived thread.
         channel = self.backend.get_channel(session.discord_thread) or await self.backend.fetch_channel(
             session.discord_thread
         )
@@ -639,11 +638,7 @@ class CodexEvents:
         # Codex IDs are UUIDv7, so their leading digits are a shared timestamp.
         # Use the entropy-bearing tail when upstream's renderer needs a short suffix.
         short_id = (session.codex_thread or "")[-4:]
-        sleeping = (
-            session.status != "running"
-            and time.time() - session.last_interaction_at >= THREAD_IDLE_SECONDS
-        )
-        title = thread_title(session.name, sid=short_id, collides=collision, sleeping=sleeping)
+        title = thread_title(session.name, sid=short_id, collides=collision)
         frontend = self.backend.frontend
         pending = session.discord_thread in frontend._retitling
         # Replace queued work even when the visible name already matches: an

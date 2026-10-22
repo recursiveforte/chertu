@@ -134,17 +134,17 @@ conversations or production Discord.
   The same layout is used for launch and discovery. Regression checks use an
   in-memory Discord sink; the screenshot style has not been visually verified
   in production Discord. Codex does not claim Claude classifier rerouting.
-- Codex thread titles use 🚀, switching to 💤 after 36 hours without interaction.
+- Codex thread titles keep 🚀 regardless of inactivity; closing uses 🌌.
   New prompt-based names preserve readable wording, capitalization, punctuation,
   and Unicode instead of using a 32-character slug. Whitespace is collapsed and
   long names end at a word boundary with an ellipsis within Discord's title limit.
   Existing native names are preserved. Formatting is verified locally; new-thread
   creation has not been exercised live in production Discord for this change.
-  Accepted prompts, thread commands, and native turn activity refresh a persisted
-  clock; polling and card refreshes do not. Running turns stay 🚀. Interaction
-  restores 🚀, and closing uses 🌌. Names and collision suffixes are preserved.
-  Maintenance checks every minute, even when native discovery is unavailable;
-  Discord rename rate limits may delay the visible change.
+  Title refreshes restore legacy 💤 prefixes to 🚀 without unarchiving threads.
+  Names and collision suffixes are preserved. Regression tests cover inactivity,
+  persisted timestamps, and legacy-title restoration; restoration has not yet
+  been verified live. Maintenance checks every minute, even when native discovery
+  is unavailable; Discord rename rate limits may delay the visible change.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
   Fieldless MCP object forms offer Allow/Decline/Cancel when an empty response

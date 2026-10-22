@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import test_codex_activity as activity_fixtures
 from chert.backends.codex.state import SessionStore
-from chert.backends.codex.events import THREAD_IDLE_SECONDS
+OLD_IDLE_SECONDS = 36 * 60 * 60
 
 
 class ThreadIdleTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +19,7 @@ class ThreadIdleTests(unittest.IsolatedAsyncioTestCase):
         self.channel.name = '🚀 original'
         self.session.thread_title_cache = self.channel.name
         self.now = time.time()
-        self.session.last_interaction_at = self.now - THREAD_IDLE_SECONDS
+        self.session.last_interaction_at = self.now - OLD_IDLE_SECONDS
 
         async def edit(**kwargs):
             for key, value in kwargs.items():
@@ -31,25 +31,25 @@ class ThreadIdleTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter.events.update_thread_title(self.session)
         await asyncio.gather(*self.host._title_tasks)
 
-    async def test_boundary_and_polling(self):
+    async def test_inactivity_and_polling_keep_live_title(self):
         await self.title_at(self.now - 1)
         self.channel.edit.assert_not_called()
         await self.title_at(self.now)
-        self.assertEqual(self.channel.name, '💤 original')
+        self.assertEqual(self.channel.name, '🚀 original')
         with patch('chert.backends.codex.events.time.time', return_value=self.now + 60):
             await self.adapter.events.observe_session(self.session, {})
-        self.assertEqual(self.session.last_interaction_at, self.now - THREAD_IDLE_SECONDS)
-        self.channel.edit.assert_awaited_once_with(name='💤 original')
+        self.assertEqual(self.session.last_interaction_at, self.now - OLD_IDLE_SECONDS)
+        self.channel.edit.assert_not_called()
 
-    async def test_prompt_wakes_sleeping_thread(self):
-        await self.title_at(self.now)
+    async def test_prompt_restores_legacy_sleeping_title(self):
+        self.channel.name = '💤 original'
         await self.adapter.send_prompt(self.channel, 'hello')
         await asyncio.gather(*self.host._title_tasks)
         self.assertEqual(self.channel.name, '🚀 original')
         self.assertGreaterEqual(self.session.last_interaction_at, self.now)
 
-    async def test_native_turn_wakes_sleeping_thread(self):
-        await self.title_at(self.now)
+    async def test_native_turn_restores_legacy_sleeping_title(self):
+        self.channel.name = '💤 original'
         await self.start()
         await asyncio.gather(*self.host._title_tasks)
         self.assertEqual(self.channel.name, '🚀 original')
@@ -68,15 +68,15 @@ class ThreadIdleTests(unittest.IsolatedAsyncioTestCase):
             await self.title_at(self.now)
         self.channel.edit.assert_not_called()
 
-    async def test_idle_clock_survives_restart(self):
+    async def test_old_inactivity_timestamp_stays_live_after_restart(self):
         self.adapter.store.save()
         self.adapter.store = SessionStore(self.adapter.store.path)
         self.session = self.adapter.store.sessions[300]
         await self.title_at(self.now)
-        self.assertEqual(self.channel.name, '💤 original')
+        self.assertEqual(self.channel.name, '🚀 original')
 
     async def test_old_state_uses_recorded_activity(self):
-        self.session.last_completed_at = self.now - THREAD_IDLE_SECONDS
+        self.session.last_completed_at = self.now - OLD_IDLE_SECONDS
         self.adapter.store.save()
         data = json.loads(self.adapter.store.path.read_text())
         del data['sessions'][0]['last_interaction_at']
@@ -84,16 +84,19 @@ class ThreadIdleTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.store = SessionStore(self.adapter.store.path)
         self.session = self.adapter.store.sessions[300]
         await self.title_at(self.now)
-        self.assertEqual(self.channel.name, '💤 original')
+        self.assertEqual(self.channel.name, '🚀 original')
 
-    async def test_idle_rename_does_not_unarchive(self):
+    async def test_legacy_title_restored_without_unarchiving(self):
+        self.channel.name = '💤 original'
+        self.session.thread_title_cache = self.channel.name
         self.channel.archived = True
-        await self.title_at(self.now)
-        self.channel.edit.assert_awaited_once_with(name='💤 original')
+        await self.adapter.events.observe_session(self.session, {})
+        await asyncio.gather(*self.host._title_tasks)
+        self.channel.edit.assert_awaited_once_with(name='🚀 original')
         self.assertTrue(self.channel.archived)
 
-    async def test_thread_command_wakes_sleeping_thread(self):
-        await self.title_at(self.now)
+    async def test_thread_command_restores_legacy_sleeping_title(self):
+        self.channel.name = '💤 original'
         await self.adapter.controls.execute('help', self.channel, self.user, {}, self.respond)
         await asyncio.gather(*self.host._title_tasks)
         self.assertEqual(self.channel.name, '🚀 original')
