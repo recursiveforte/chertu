@@ -149,11 +149,12 @@ conversations or production Discord.
   long names end at a word boundary with an ellipsis within Discord's title limit.
   Existing native names are preserved. Formatting is verified locally; new-thread
   creation has not been exercised live in production Discord for this change.
-  Title refreshes restore legacy 💤 prefixes to 🚀 without unarchiving threads.
-  Names and collision suffixes are preserved. Regression tests cover inactivity,
-  persisted timestamps, and legacy-title restoration; restoration has not yet
-  been verified live. Maintenance checks every minute, even when native discovery
-  is unavailable; Discord rename rate limits may delay the visible change.
+  Regular title refreshes restore legacy 💤 prefixes to 🚀 and do not unarchive
+  threads. Names and collision suffixes are preserved. Regression tests cover
+  inactivity, persisted timestamps, and legacy-title restoration. Live Discord
+  API checks verified 25 open-session titles restored to 🚀 on 2026-10-22.
+  Maintenance checks every minute, even when native discovery is unavailable;
+  Discord rename rate limits may delay the visible change.
 - Native approval/input controls. Approval identities are connection-scoped and
   old controls cannot approve a newer request.
   Fieldless MCP object forms offer Allow/Decline/Cancel when an empty response
