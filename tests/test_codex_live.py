@@ -68,6 +68,10 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
                 continue
             elif method == "turn/start":
                 result = {"turn": {"id": "new-turn", "status": "inProgress"}}
+            elif method == "thread/queue/add":
+                result = {"queuedSubmission": {"id": "queued-test"}}
+            elif method == "thread/queue/list":
+                result = {"data": [{"id": "queued-test"}]}
             elif method == "hang":
                 self.hanging.set()
                 continue
@@ -119,6 +123,21 @@ class LiveTransportTests(unittest.IsolatedAsyncioTestCase):
                 "effort": "high",
             },
         )
+
+    async def test_file_context_is_injected_into_native_queue_and_steering(self):
+        from unittest.mock import patch
+        session = Session(1, "/project", "test", "first", host="macbook")
+        context = "[Chert file viewer context: https://viewer.example/files/]"
+        with patch("chert.file_links.viewer_context", return_value=context) as build:
+            await self.client.submit(session, "Make a report", queue=True)
+        call = next(c for c in self.calls if c.get("method") == "thread/queue/add")
+        self.assertTrue(call["params"]["input"][1]["text"].endswith(context))
+        build.assert_called_once_with("/project", "macbook")
+        self.client.active_turns["first"] = "active-turn"
+        with patch("chert.file_links.viewer_context", return_value=context):
+            await self.client.submit(session, "Update the report")
+        call = next(c for c in self.calls if c.get("method") == "turn/steer")
+        self.assertTrue(call["params"]["input"][1]["text"].endswith(context))
 
     async def test_promote_claims_exact_queue_entry_before_steering_with_native_input(self):
         queued = {

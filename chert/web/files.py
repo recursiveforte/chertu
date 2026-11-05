@@ -131,7 +131,7 @@ def file_error(error):
 
 @files.route("/")
 def index():
-    return render_template("files.html")
+    return render_template("files.html", files_only=request.environ.get("chert.files_only", False))
 
 
 @files.route("/static/<path:name>")

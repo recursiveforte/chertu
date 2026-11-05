@@ -13,6 +13,7 @@ Use --rapid-queue to verify five quick replies leave one completed card per turn
 Use --yolo to verify host YOLO permissions and tool execution in an isolated runtime.
 Use --images to verify a native picture request reaches the Discord attachment sink.
 Use --project-create to ask a native agent to create a project through the isolated bridge.
+Use --files to verify an agent automatically links a newly written Markdown report.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -99,6 +100,34 @@ async def check_images(adapter, session, channel, consumer):
     assert session.status == "idle", f"Picture request failed: {session.status}"
     assert uploaded == [("picture.png", data)], f"Expected one picture; got {len(uploaded)}"
     print("Native picture request → explicit reply image → Discord attachment bytes: PASS", flush=True)
+
+
+async def check_file_links(frontend, session, channel, consumer, root, messages):
+    import re
+    from urllib.parse import parse_qs, urlsplit
+    from chert.projects import Project, ProjectStore
+
+    projects = ProjectStore(root / "viewer-projects.json")
+    projects.projects["work"] = Project("work", session.cwd, 100)
+    projects.save()
+    with patch.dict(os.environ, {"PROJECT_STATE_FILE": str(projects.path),
+                                 "CHERT_FILES_URL": "https://viewer.example/files/"}):
+        await frontend.codex.send_prompt(
+            channel, "Write a short Markdown report called report.md in the current directory "
+            "with three example test results. Then tell me it is ready."
+        )
+    async with asyncio.timeout(180):
+        while not session.turns and session.status not in {"error", "interrupted"}:
+            if consumer.done():
+                await consumer
+            await asyncio.sleep(0.1)
+    await frontend.codex.live.notifications.join()
+    assert session.status == "idle", session.status
+    assert (Path(session.cwd) / "report.md").is_file()
+    urls = re.findall(r"https://viewer\.example/files/\?[^\s)>]+", "\n".join(messages))
+    assert any(parse_qs(urlsplit(url).query) == {"project": ["work"], "path": ["report.md"]}
+               for url in urls), "Agent omitted or misaddressed the automatic viewer link"
+    print("Native report request → created Markdown → automatic correct viewer link: PASS", flush=True)
 
 
 async def check_model(frontend, session, channel, consumer):
@@ -598,6 +627,7 @@ async def main(
     yolo_check=False,
     images_check=False,
     project_create_check=False,
+    files_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -721,6 +751,9 @@ async def main(
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if files_check:
+                    await check_file_links(frontend, session, channel, consumer, root, messages)
+                    return
                 if project_create_check:
                     await check_project_creation(frontend, session, channel, consumer, root, messages)
                     return
@@ -815,5 +848,6 @@ if __name__ == "__main__":
             yolo_check="--yolo" in sys.argv,
             images_check="--images" in sys.argv,
             project_create_check="--project-create" in sys.argv,
+            files_check="--files" in sys.argv,
         )
     )

@@ -198,6 +198,18 @@ conversations or production Discord.
   and remote MacBook Markdown through the actual SSH host configuration.
   Editing, executable HTML previews, PDF previews, and remote Claude execution
   are not provided by this viewer.
+  Public viewer instructions are now included on every Codex prompt (including
+  queue/steering) and Claude delivery when the current directory is viewable.
+  They select the host's most specific project and use a configured public URL
+  or the current tunnel URL file. The optional viewer-only gateway excludes
+  session/control routes and write methods. Its Cloudflare Quick Tunnel requires
+  a single allowed email and publishes URL changes for subsequent prompts;
+  older posted links expire when that tunnel restarts. On 2026-11-05,
+  `tests/live_codex_activity.py --files` passed with an isolated real agent:
+  a report-writing request produced a new Markdown file and an automatic,
+  correctly addressed viewer link without an explicit request for a link.
+  A protected Quick Tunnel to an empty test origin reached Cloudflare's email
+  sign-in form in Chrome. The user's completed email login has not been exercised.
 
 ## Verification and limits
 

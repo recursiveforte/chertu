@@ -200,6 +200,11 @@ limited to 8 MB, text rendering to 2 MB, and folder listings to 2,000 entries.
 Remote hosts must be reachable through Chert's existing SSH configuration. Keep
 the existing loopback/authenticated-proxy setup when exposing the viewer.
 
+Agents can automatically include public viewer links in their replies. An
+optional email-protected Cloudflare tunnel makes the read-only viewer available
+on other devices. See [file links and remote access](docs/file-viewer.md) for
+configuration, authentication, and the changing-address limit of Quick Tunnels.
+
 ## Code organization
 
 Application code lives under `chert/`: `discord/` contains the gateway and UI, `backends/` contains the harnesses, `web/` contains the dashboard and local API, and `vendor/` isolates audited upstream code. Root Python files are thin deployment entrypoints. See [architecture](docs/architecture.md) for component boundaries and retained compatibility paths.

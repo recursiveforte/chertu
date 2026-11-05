@@ -11,7 +11,7 @@
   <header class="topbar">
     <a class="brand" href="/files/">◈ <span>Chert</span></a>
     <span class="divider">/</span><span>Files</span>
-    <a class="sessions" href="/codex/">Sessions ↗</a>
+    {% if not files_only %}<a class="sessions" href="/codex/">Sessions ↗</a>{% endif %}
   </header>
   <div class="workspace">
     <aside class="sidebar" aria-label="Project files">

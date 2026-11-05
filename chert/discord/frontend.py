@@ -14,6 +14,7 @@ import discord
 from chert.vendor import bridge as upstream
 from chert.paths import runtime_path
 from chert.projects import ProjectStore
+from chert.file_links import viewer_context
 from chert.discord.projects import ProjectCommands
 from chert.discord.audio import AudioMessage, Transcriber, prepare_audio
 from chert.discord.markdown import discord_tables
@@ -29,6 +30,12 @@ LOG = logging.getLogger(__name__)
 
 
 class Frontend(upstream.Bridge):
+    def deliver(self, session, author, text):
+        context = viewer_context(session.get("cwd", ""), "local")
+        if context:
+            text = text + "\n\n" + context
+        return super().deliver(session, author, text)
+
     def __init__(self, config, options, store, projects=None):
         self.config = config
         self.projects = projects or ProjectStore(

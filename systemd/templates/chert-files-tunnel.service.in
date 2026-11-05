@@ -1,0 +1,18 @@
+[Unit]
+Description=chert: email-protected Cloudflare file viewer tunnel
+Wants=network-online.target chert-files.service
+After=network-online.target chert-files.service
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@
+EnvironmentFile=@APP@/.env
+ExecStart=@VENV@/bin/python -m chert.tunnel
+Restart=always
+RestartSec=15
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

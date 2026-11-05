@@ -1,0 +1,15 @@
+[Unit]
+Description=chert: read-only files endpoint for authenticated tunnel
+After=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@
+EnvironmentFile=@APP@/.env
+ExecStart=@VENV@/bin/gunicorn --bind 127.0.0.1:8900 --workers 2 --threads 4 --timeout 60 chert.web.files_gateway:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

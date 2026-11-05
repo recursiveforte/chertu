@@ -239,9 +239,12 @@ class LiveCodex:
         await self.attach(session.codex_thread)
         from chert.backends.codex.images import DELIVERY_CONTEXT
         from chert.backends.codex.project_context import project_context
+        from chert.file_links import viewer_context
 
+        context = "\n".join(filter(None, [DELIVERY_CONTEXT, project_context(session.host),
+                                          viewer_context(session.cwd, session.host)]))
         inputs = [{"type": "text", "text": prompt},
-                  {"type": "text", "text": DELIVERY_CONTEXT + "\n" + project_context(session.host)}]
+                  {"type": "text", "text": context}]
         turn_id = await self.active_turn(session.codex_thread)
         if turn_id and not queue:
             await self.call(
