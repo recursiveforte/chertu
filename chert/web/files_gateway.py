@@ -1,10 +1,18 @@
 """Viewer-only WSGI endpoint for an authenticated tunnel, bound to loopback."""
 
+import os
 from werkzeug.wrappers import Response
 from chert.web.dashboard import app as dashboard
 
 
 def app(environ, start_response):
+    if os.environ.get('CHERT_VIEWER_SESSIONS') == '1':
+        from chert.web.viewer_auth import login_origin
+        return login_origin(environ, start_response)
+    return viewer_app(environ, start_response)
+
+
+def viewer_app(environ, start_response):
     path = environ.get("PATH_INFO", "")
     if environ.get("REQUEST_METHOD") not in {"GET", "HEAD"}:
         return Response("Read-only viewer\n", status=405)(environ, start_response)

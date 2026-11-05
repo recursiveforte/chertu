@@ -7,3 +7,4 @@ boto3>=1.40
 jsonschema>=4.23,<5
 av==18.1.0
 markdown-it-py==4.0.0
+itsdangerous>=2.2,<3

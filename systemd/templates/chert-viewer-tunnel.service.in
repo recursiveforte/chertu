@@ -1,0 +1,18 @@
+[Unit]
+Description=chert: tunnel to the authenticated file viewer
+Wants=network-online.target chert-viewer.service chert-files-tunnel.service
+After=network-online.target chert-viewer.service chert-files-tunnel.service
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@
+EnvironmentFile=@APP@/.env
+ExecStart=@VENV@/bin/python -m chert.tunnel --viewer
+Restart=always
+RestartSec=15
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

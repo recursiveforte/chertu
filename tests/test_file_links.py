@@ -96,7 +96,7 @@ class ProtectedTunnelTests(unittest.TestCase):
 
             process = SimpleNamespace(stdout=output(), wait=lambda: 0, poll=lambda: 0)
             with (patch.dict(os.environ, {'CHERT_TUNNEL_EMAIL': 'me@example.com'}),
-                  patch.object(tunnel, 'viewer_url_file', return_value=path),
+                  patch.object(tunnel, 'login_url_file', return_value=path),
                   patch.object(tunnel, 'load_dotenv'), patch.object(tunnel.signal, 'signal'),
                   patch.object(tunnel.subprocess, 'Popen', return_value=process)):
                 self.assertEqual(tunnel.main(), 0)

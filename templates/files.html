@@ -12,6 +12,7 @@
     <a class="brand" href="/files/">◈ <span>Chert</span></a>
     <span class="divider">/</span><span>Files</span>
     {% if not files_only %}<a class="sessions" href="/codex/">Sessions ↗</a>{% endif %}
+    {% if viewer_session %}<a class="sessions" href="/logout">Sign out</a>{% endif %}
   </header>
   <div id="connection-notice" class="connection-notice" role="alert" hidden>
     <span id="connection-message"></span>

@@ -1,0 +1,16 @@
+[Unit]
+Description=chert: file viewer with authenticated browser sessions
+After=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@
+EnvironmentFile=@APP@/.env
+ExecStart=@VENV@/bin/gunicorn --bind 127.0.0.1:8902 --workers 2 --threads 4 --timeout 60 chert.web.viewer_auth:app
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

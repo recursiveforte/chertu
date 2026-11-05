@@ -218,6 +218,17 @@ conversations or production Discord.
   [#1752](https://github.com/cloudflare/cloudflared/issues/1752) reports protected
   Quick Tunnel sessions expiring within seconds; this is a suspected cause of
   the user's failure, not confirmed with their authenticated browser session.
+  Directory endpoints for all ten registered projects subsequently passed direct
+  production checks. Optional persistent browser sessions now separate the email
+  check from file serving: a protected login origin exchanges a browser-bound
+  60-second grant for a four-hour Secure/HttpOnly viewer cookie. The public viewer
+  rejects anonymous file/API/static requests, and its tunnel preflight requires
+  that rejection before publishing. The login tunnel retains its single-email
+  restriction. Eight authorization tests and `tests/browser_viewer_auth.py`
+  passed with temporary identities: folder navigation, reads, refresh, and reload
+  survived simulated email-cookie expiry; grant theft, replay, tampering, policy
+  mismatch, and anonymous access were rejected. The real user's email-code
+  handoff has not been exercised by these tests.
 
 ## Verification and limits
 
