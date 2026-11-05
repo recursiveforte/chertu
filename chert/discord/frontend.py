@@ -37,6 +37,7 @@ class Frontend(upstream.Bridge):
         self._project_context = ContextVar("chert_project", default=None)
         self.project_lock = asyncio.Lock()
         self.project_channels = {}
+        self._leaving_threads = set()
         self.transcriber = Transcriber()
         upstream.CHANNEL_ID = 0
         upstream.PROJECT_ROOT = config.project_root
@@ -81,6 +82,7 @@ class Frontend(upstream.Bridge):
     def intents_for_bot():
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True  # Receive Leave Thread membership updates.
         return intents
 
     async def on_hook(self, event):
@@ -137,6 +139,37 @@ class Frontend(upstream.Bridge):
                 await self.codex_hosts[session.host].reactions.click(payload)
         except Exception:
             LOG.exception("Queued prompt reaction handling failed")
+
+    async def on_raw_thread_member_remove(self, payload):
+        """Treat an authorized user's Leave Thread action like /close."""
+        if payload.guild_id != self.config.guild_id:
+            return
+        removed = {int(value) for value in payload.data.get("removed_member_ids", [])}
+        if self.user:
+            removed.discard(self.user.id)
+        if not any(self.allowed_user(discord.Object(id=user_id)) for user_id in removed):
+            return
+        session = self.session_store.sessions.get(payload.thread_id)
+        if session is None or payload.thread_id in self._leaving_threads:
+            return
+        backend = self.codex_hosts.get(session.host)
+        if backend is None or payload.thread_id in backend.stopping:
+            return
+        # discord.py can dispatch this same batch once per removed member.
+        self._leaving_threads.add(payload.thread_id)
+        try:
+            thread = self.get_channel(payload.thread_id) or await self.fetch_channel(payload.thread_id)
+            if not isinstance(thread, discord.Thread) or self.projects.for_channel(thread) is None:
+                return
+            if session.status == "ended" and thread.archived:
+                return
+            result = await backend.stop(thread, end=True)
+            # Posting a confirmation here could reopen the thread after closing it.
+            LOG.info("Closed thread %s after member departure: %s", thread.id, result)
+        except Exception:
+            LOG.exception("Could not close thread %s after member departure", payload.thread_id)
+        finally:
+            self._leaving_threads.discard(payload.thread_id)
 
     async def dispatch_command(self, name, original, interaction, kwargs):
         if not self.allowed_user(interaction.user):

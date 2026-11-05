@@ -99,7 +99,7 @@ codex login                 # or: codex login --device-auth
 
 Install and log into Claude Code if you want to use it. If you have no Claude account, set `CLAUDE_ENABLED=0` in `.env`: projects remain available through Codex and the bot explains that Claude is unavailable.
 
-Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications), enable **Message Content Intent**, then:
+Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications), enable **Message Content Intent** and **Server Members Intent**, then:
 
 ```bash
 git clone https://github.com/recursiveforte/chert.git

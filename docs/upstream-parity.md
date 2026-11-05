@@ -261,6 +261,16 @@ event, and card writes before archiving. Regression tests reproduce the old
 heartbeat-driven reopening and verify repeated ticks, persisted closed state
 after restart, and a status write racing with closure using in-memory Discord.
 
+Leaving a tracked Codex Discord thread as an authorized user now invokes the same
+close operation, including for remote hosts and archived projects. It ends the
+session and archives the thread without posting a confirmation. The gateway
+requires Server Members Intent. Membership removals do not identify whether a
+user clicked Leave Thread or was removed by a moderator; either removal closes
+the session. Unrelated users, bots, untracked threads, and disabled Claude sessions
+are ignored. Tests simulate raw membership events, duplicate batches, permissions,
+host routing, and failure recovery. The Leave Thread click has not been exercised
+end to end in production Discord.
+
 `tests/live_codex_activity.py` uses a separate temporary Codex home and app-server,
 with an in-memory Discord sink. Its checks cover real inference/tool activity,
 heartbeat and completion, the model picker followed by actual model switching,

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -66,6 +67,94 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         await command._do_call(interaction, {})
         self.bot.codex.stop.assert_not_called()
         self.assertIn("restricted", interaction.response.send_message.call_args.args[0])
+
+    def leave_payload(self, users=(7,), thread_id=300, guild_id=1):
+        return discord.RawThreadMembersUpdate({
+            "id": str(thread_id), "guild_id": str(guild_id), "member_count": 1,
+            "removed_member_ids": [str(user) for user in users],
+        })
+
+    def prepare_leave_thread(self):
+        session = Session(300, self.tmp.name, "test", "native")
+        self.bot.session_store.sessions[300] = session
+        thread = Mock(spec=discord.Thread, id=300, parent_id=100, archived=False)
+        self.bot.get_channel = Mock(return_value=thread)
+        self.bot.fetch_channel = AsyncMock(return_value=thread)
+        self.bot.codex.stop = AsyncMock(return_value="closed")
+        return session, thread
+
+    async def test_leave_closes_tracked_thread_in_archived_project_without_posting(self):
+        session, thread = self.prepare_leave_thread()
+        self.bot.projects.projects["primary"].archived = True
+        self.bot.say = AsyncMock()
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.bot.codex.stop.assert_awaited_once_with(thread, end=True)
+        self.bot.say.assert_not_called()
+        self.assertTrue(self.bot.intents.members)
+
+    async def test_leave_ignores_unrelated_users_guilds_and_threads(self):
+        self.prepare_leave_thread()
+        self.bot._connection.user = SimpleNamespace(id=55)
+        for payload in (
+            self.leave_payload(users=(999,)), self.leave_payload(users=(55,)),
+            self.leave_payload(users=()), self.leave_payload(guild_id=2),
+            self.leave_payload(thread_id=400),
+        ):
+            await self.bot.on_raw_thread_member_remove(payload)
+        self.bot.codex.stop.assert_not_called()
+        self.bot.get_channel.assert_not_called()
+
+    async def test_leave_routes_allowed_user_to_sessions_remote_host(self):
+        session, thread = self.prepare_leave_thread()
+        self.bot.codex.config.allowed_users.add(8)
+        session.host = "remote"
+        remote = SimpleNamespace(stop=AsyncMock(), stopping=set(), shutdown=AsyncMock())
+        self.bot.codex_hosts["remote"] = remote
+        self.bot.get_channel.return_value = None
+        await self.bot.on_raw_thread_member_remove(self.leave_payload(users=(8,)))
+        remote.stop.assert_awaited_once_with(thread, end=True)
+        self.bot.codex.stop.assert_not_called()
+
+    async def test_leave_deduplicates_batch_and_completed_closure(self):
+        session, thread = self.prepare_leave_thread()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def stop(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            session.status = "ended"
+            thread.archived = True
+
+        self.bot.codex.stop.side_effect = stop
+        first = asyncio.create_task(self.bot.on_raw_thread_member_remove(self.leave_payload()))
+        await entered.wait()
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        release.set()
+        await first
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.bot.codex.stop.assert_awaited_once()
+
+    async def test_leave_failure_is_logged_and_later_event_can_retry(self):
+        session, thread = self.prepare_leave_thread()
+        self.bot.codex.stop.side_effect = OSError("offline")
+        with self.assertLogs("chert.discord.frontend", level="ERROR"):
+            await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.assertFalse(self.bot._leaving_threads)
+        self.bot.codex.stop.side_effect = None
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.assertEqual(self.bot.codex.stop.await_count, 2)
+
+    async def test_leave_ignores_missing_host_untracked_project_and_active_close(self):
+        session, thread = self.prepare_leave_thread()
+        session.host = "missing"
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        session.host = "local"
+        self.bot.codex.stopping.add(300)
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.bot.codex.stopping.clear()
+        thread.parent_id = 999
+        await self.bot.on_raw_thread_member_remove(self.leave_payload())
+        self.bot.codex.stop.assert_not_called()
 
     async def test_close_routes_claude_to_existing_end_handler(self):
         original = AsyncMock()
