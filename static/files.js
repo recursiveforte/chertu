@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let project = '', folder = '', path = '', entries = [], doc = null, mode = 'preview';
 let fileGeneration = 0, listGeneration = 0, polling = false;
+let connectionBlocked = false;
 const query = new URLSearchParams(location.search);
 const api = (suffix, params = {}) => `/files/api/${encodeURIComponent(project)}/${suffix}?${new URLSearchParams(params)}`;
 const raw = () => `/files/raw/${encodeURIComponent(project)}?${new URLSearchParams({path})}`;
@@ -9,10 +10,47 @@ const parent = value => value.split('/').slice(0, -1).join('/');
 const join = (a, b) => a ? `${a}/${b}` : b;
 const size = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;
 async function fetchJSON(url) {
-  const response = await fetch(url, {cache: 'no-store'});
+  let response;
+  try {
+    // Access redirects must be followed as page navigation, not cross-origin fetches.
+    response = await fetch(url, {cache: 'no-store', credentials: 'same-origin', redirect: 'manual'});
+  } catch {
+    throw connectionError('Could not reach the viewer. Check your connection, then retry.');
+  }
+  if (response.type === 'opaqueredirect' || [301, 302, 303, 307, 308, 401].includes(response.status)) {
+    throw connectionError('Your sign-in expired. Sign in again to continue.', true);
+  }
+  const isJSON = (response.headers.get('content-type') || '').includes('application/json');
+  if (!isJSON) {
+    if (response.status === 403) {
+      throw connectionError('The access service denied this request. Sign in again to continue.', true);
+    }
+    throw connectionError(`The viewer is temporarily unavailable (HTTP ${response.status}). Please retry.`);
+  }
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body;
+}
+function connectionError(message, signIn = false) {
+  connectionBlocked = true;
+  $('connection-notice').hidden = false;
+  $('connection-message').textContent = message;
+  $('sign-in').hidden = !signIn;
+  $('sign-in').href = location.href;
+  return new Error(message);
+}
+function clearConnectionError() {
+  connectionBlocked = false;
+  $('connection-notice').hidden = true;
+}
+async function retryConnection() {
+  clearConnectionError();
+  if (!project) return loadProjects();
+  await openFolder(folder);
+  if (!connectionBlocked && path) {
+    if (doc) await refreshFile();
+    else await openFile(path);
+  }
 }
 function saveLocation() {
   history.replaceState(null, '', `/files/?${new URLSearchParams({project, ...(path ? {path} : {folder})})}${location.hash}`);
@@ -113,7 +151,8 @@ $('project').onchange = () => {
   openFolder('');
 };
 $('up').onclick = () => openFolder(parent(folder));
-$('reload').onclick = () => { openFolder(folder); refreshFile(); };
+$('reload').onclick = retryConnection;
+$('retry').onclick = retryConnection;
 $('filter').oninput = () => { $('list-status').textContent = `${entries.length} items`; renderEntries(); };
 $('preview').onclick = () => { mode = 'preview'; renderDocument(); };
 $('source').onclick = () => { mode = 'source'; renderDocument(); };
@@ -122,8 +161,9 @@ $('copy').onclick = async () => {
   catch { window.prompt('Copy this file link:', location.href); }
   setTimeout(() => { $('copy').textContent = 'Copy link'; }, 1800);
 };
-setInterval(() => { if ($('auto').checked && !document.hidden) refreshFile(); }, 5000);
-(async () => {
+setInterval(() => { if ($('auto').checked && !document.hidden && !connectionBlocked) refreshFile(); }, 5000);
+async function loadProjects() {
+  $('project').disabled = true;
   try {
     const result = await fetchJSON('/files/api/projects'); $('project').replaceChildren();
     for (const p of result.projects) {
@@ -135,10 +175,12 @@ setInterval(() => { if ($('auto').checked && !document.hidden) refreshFile(); },
     const requested = query.get('project');
     project = result.projects.some(p => p.name === requested) ? requested : result.projects[0].name;
     $('project').value = project;
+    $('project').disabled = false;
     const initial = requested === project ? query.get('path') || '' : '';
     path = initial;
     const initialProject = project;
     await openFolder(initial ? parent(initial) : query.get('folder') || '');
-    if (initial && project === initialProject) await openFile(initial, true);
+    if (initial && project === initialProject && !connectionBlocked) await openFile(initial, true);
   } catch (error) { $('list-status').textContent = error.message; }
-})();
+}
+loadProjects();

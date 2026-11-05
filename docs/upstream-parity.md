@@ -210,6 +210,14 @@ conversations or production Discord.
   correctly addressed viewer link without an explicit request for a link.
   A protected Quick Tunnel to an empty test origin reached Cloudflare's email
   sign-in form in Chrome. The user's completed email login has not been exercised.
+  Following a reported “Failed to fetch”, the viewer now distinguishes expired
+  authentication from connection/upstream errors. It offers a top-level sign-in
+  link preserving the document URL, pauses polling after failure, and can retry
+  the initial project load. `tests/browser_file_viewer.py` passed with simulated
+  Access redirects and network failures in isolated Chrome. Cloudflare issue
+  [#1752](https://github.com/cloudflare/cloudflared/issues/1752) reports protected
+  Quick Tunnel sessions expiring within seconds; this is a suspected cause of
+  the user's failure, not confirmed with their authenticated browser session.
 
 ## Verification and limits
 

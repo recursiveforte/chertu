@@ -53,6 +53,14 @@ change after a restart, so previously posted links expire.** Subsequent prompts
 receive the new URL automatically. Cloudflare provides no uptime guarantee for
 Quick Tunnels; configure a named tunnel and `CHERT_FILES_URL` for a stable domain.
 
+Cloudflare has an open [protected Quick Tunnel session-expiry issue](https://github.com/cloudflare/cloudflared/issues/1752):
+some email sign-ins expire within seconds, redirecting later file requests to
+login. Chert detects those redirects without following them as cross-origin
+fetches, pauses polling, preserves the open document, and offers **Sign in again**.
+Connection failures have a separate retry action, including during initial
+project loading. This improves recovery and diagnosis; it does not repair the
+Cloudflare broker's session lifetime. Do not remove email protection as a fix.
+
 ## Verification
 
 Run `python -m unittest discover -s tests -v` in an isolated checkout. The tests
@@ -62,6 +70,11 @@ email protection. `python tests/live_codex_activity.py --files` performs a real
 isolated agent turn and checks that a newly written report receives the correct
 viewer link without explicitly requesting one. It uses an isolated `CODEX_HOME`
 and in-memory Discord sink; no existing conversation is used.
+
+`python tests/browser_file_viewer.py` (with Playwright installed) checks login
+redirects, paused polling, preserved document links, first-load recovery, network
+errors, and non-JSON upstream responses using a temporary origin. `--cdp URL`
+can use a separate temporary browser instead of a local Playwright browser.
 
 Before exposing project files, test the tunnel against an empty origin and
 verify its unauthenticated URL reaches Cloudflare's email sign-in form. Verify
