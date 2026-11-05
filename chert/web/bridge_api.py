@@ -1,7 +1,9 @@
 """Authenticated local control API used by hooks and the dashboard."""
 
 import json
+from dataclasses import asdict
 from pathlib import Path
+import discord
 from aiohttp import web
 from chert.vendor import bridge as upstream
 from chert.backends.codex.state import session_key
@@ -27,7 +29,42 @@ class BridgeAPI:
         app.router.add_post("/codex/send", self.codex_send_http)
         app.router.add_post("/codex/screen", self.codex_screen_http)
         app.router.add_get("/health", self.health)
+        app.router.add_get("/projects", self.projects_http)
+        app.router.add_post("/projects", self.create_project_http)
         return app
+
+    async def projects_http(self, request):
+        if not self.authorized(request):
+            return web.json_response({"error": "bad secret"}, status=403)
+        return web.json_response({
+            "projects": [self.project_result(p) for p in self.frontend.projects.projects.values()],
+            "hosts": [{"name": h.name, "project_root": h.project_root or "~/projects"}
+                      for h in self.frontend.hosts.values()],
+        })
+
+    def project_result(self, project):
+        return {**asdict(project), "url": (
+            f"https://discord.com/channels/{self.frontend.projects.guild_id}/{project.channel_id}"
+        )}
+
+    async def create_project_http(self, request):
+        if not self.authorized(request):
+            return web.json_response({"error": "bad secret"}, status=403)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) - {"name", "directory", "host"}:
+                raise ValueError("Expected name, optional directory and optional host.")
+            name, directory, host = body.get("name"), body.get("directory"), body.get("host", "local")
+            if not isinstance(name, str) or not isinstance(host, str):
+                raise ValueError("Name and host must be strings.")
+            if directory is not None and (not isinstance(directory, str) or not directory.strip()):
+                raise ValueError("Directory must be a nonempty string, or omitted for a new project.")
+            project = await self.frontend.project_commands.create_project(name, directory, host)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except (OSError, discord.HTTPException) as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        return web.json_response(self.project_result(project), status=201)
 
     async def start(self):
         self.runner = web.AppRunner(self.create_app(), access_log=None)

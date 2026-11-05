@@ -12,6 +12,7 @@ Use --queue-steer to promote a queued prompt by clicking its reaction during a r
 Use --rapid-queue to verify five quick replies leave one completed card per turn.
 Use --yolo to verify host YOLO permissions and tool execution in an isolated runtime.
 Use --images to verify a native picture request reaches the Discord attachment sink.
+Use --project-create to ask a native agent to create a project through the isolated bridge.
 No Discord token, production daemon, or production conversation is used.
 """
 
@@ -25,7 +26,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -33,6 +34,45 @@ from chert.config import CodexOptions
 from chert.backends.codex.state import Session, SessionStore
 from chert.config import Config
 from support import make_frontend
+
+
+async def check_project_creation(frontend, session, channel, consumer, root, messages):
+    from aiohttp.test_utils import TestServer
+    from chert.projects import ProjectStore
+    from chert.vendor import bridge as upstream
+
+    secret = root / "hook.secret"
+    secret.write_text(os.urandom(32).hex())
+    secret.chmod(0o600)
+    frontend.hook_secret = Mock(return_value=secret.read_text())
+    guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=SimpleNamespace(id=601)))
+    frontend.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+    server = TestServer(frontend.api.create_app())
+    await server.start_server()
+    try:
+        with patch.object(upstream, "HOOK_PORT", server.port), patch.object(
+            upstream, "HOOK_SECRET_FILE", secret
+        ):
+            await frontend.codex.send_prompt(
+                channel, "Create a new Chert project called garden-notes for me. "
+                "Just create the project folder and channel, then give me its channel link."
+            )
+        async with asyncio.timeout(180):
+            while not session.turns and session.status not in {"error", "interrupted"}:
+                if consumer.done():
+                    await consumer
+                await asyncio.sleep(0.1)
+        await frontend.codex.live.notifications.join()
+        assert session.status == "idle", session.status
+        project = ProjectStore(frontend.projects.path).projects["garden-notes"]
+        assert Path(project.directory).is_dir()
+        assert project.channel_id == 601
+        guild.create_text_channel.assert_awaited_once()
+        assert any("https://discord.com/channels/1/601" in m for m in messages)
+        assert secret.read_text() not in "\n".join(messages)
+        print("Native project request → shell helper → HTTP bridge → folder/channel registration: PASS", flush=True)
+    finally:
+        await server.close()
 
 
 async def check_images(adapter, session, channel, consumer):
@@ -557,6 +597,7 @@ async def main(
     fast_default_check=False,
     yolo_check=False,
     images_check=False,
+    project_create_check=False,
 ):
     binary = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     original_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -623,6 +664,7 @@ async def main(
                 {
                     "cwd": str(project),
                     **adapter.start_permissions(),
+                    "config": {"sandbox_workspace_write.network_access": project_create_check},
                     # Native queued submissions need persisted history; the
                     # entire isolated home is removed after every check.
                     "ephemeral": False,
@@ -679,6 +721,9 @@ async def main(
 
             ticker = asyncio.create_task(heartbeat())
             try:
+                if project_create_check:
+                    await check_project_creation(frontend, session, channel, consumer, root, messages)
+                    return
                 if images_check:
                     await check_images(adapter, session, channel, consumer)
                     return
@@ -769,5 +814,6 @@ if __name__ == "__main__":
             fast_default_check="--fast-default" in sys.argv,
             yolo_check="--yolo" in sys.argv,
             images_check="--images" in sys.argv,
+            project_create_check="--project-create" in sys.argv,
         )
     )

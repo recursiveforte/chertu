@@ -1,4 +1,7 @@
 from pathlib import Path
+import asyncio
+import json
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -62,3 +65,58 @@ class BridgeAPITests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/codex/send", headers=headers, json={"sid": "native"})
         self.assertEqual(response.status, 409)
         self.backend.send_prompt.assert_not_called()
+
+    async def test_project_api_auth_validation_creation_and_duplicates(self):
+        channel = SimpleNamespace(id=600)
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=channel))
+        self.frontend.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        for method in (self.client.get, self.client.post):
+            response = await method("/projects")
+            self.assertEqual(response.status, 403)
+        headers = {"X-Hearth-Secret": "private-test-secret"}
+        for body in ([], {}, {"name": 12}, {"name": "../escape"},
+                     {"name": "fresh", "directory": ""}, {"name": "fresh", "host": "unknown"},
+                     {"name": "fresh", "unexpected": True}):
+            response = await self.client.post("/projects", headers=headers, json=body)
+            self.assertEqual(response.status, 400, await response.text())
+        guild.create_text_channel.assert_not_called()
+        response = await self.client.post("/projects", headers=headers, json={"name": "fresh"})
+        self.assertEqual(response.status, 201, await response.text())
+        result = await response.json()
+        self.assertTrue(Path(result["directory"]).is_dir())
+        self.assertEqual(result["url"], "https://discord.com/channels/1/600")
+        response = await self.client.post("/projects", headers=headers, json={"name": "fresh"})
+        self.assertEqual(response.status, 400)
+        guild.create_text_channel.assert_awaited_once()
+        response = await self.client.get("/projects", headers=headers)
+        result = await response.json()
+        self.assertIn("fresh", [p["name"] for p in result["projects"]])
+        self.assertEqual(result["hosts"][0]["name"], "local")
+
+    async def test_agent_cli_creates_through_real_http_and_keeps_secret_private(self):
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=SimpleNamespace(id=601)))
+        self.frontend.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        secret_file = Path(self.tmp.name) / "secret"
+        secret_file.write_text("private-test-secret")
+        helper = Path(__file__).parents[1] / "bin/chert-project"
+
+        async def run(*args):
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(helper), "--port", str(self.client.server.port),
+                "--secret-file", str(secret_file), *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+            self.assertNotIn(b"private-test-secret", out + err)
+            return proc.returncode, out, err
+
+        code, out, err = await run("create", "from-chat")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["channel_id"], 601)
+        self.assertTrue((Path(self.tmp.name) / "from-chat").is_dir())
+        code, out, err = await run("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("from-chat", [p["name"] for p in json.loads(out)["projects"]])
+        code, out, err = await run("create", "from-chat")
+        self.assertEqual(code, 1)
+        self.assertIn(b"already exists", err)

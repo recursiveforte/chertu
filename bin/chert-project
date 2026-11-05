@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Create/list Chert projects through the running bridge; never edit its state files."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("HEARTH_HOOK_PORT", "8897")))
+    parser.add_argument("--secret-file", default=os.environ.get(
+        "HEARTH_HOOK_SECRET", str(Path.home() / ".claude/hearth-hook.secret")
+    ))
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("list", help="List projects and configured execution hosts")
+    create = commands.add_parser("create", help="Create a folder and Discord project channel")
+    create.add_argument("name")
+    create.add_argument("--dir", help="Register this existing directory instead of creating a folder")
+    create.add_argument("--host", default="local")
+    args = parser.parse_args()
+    try:
+        secret = Path(args.secret_file).expanduser().read_text().strip()
+        if not secret:
+            raise ValueError("The bridge hook secret is empty.")
+        payload = None
+        if args.command == "create":
+            payload = json.dumps({
+                "name": args.name, "directory": args.dir, "host": args.host,
+            }).encode()
+        request = Request(
+            f"http://127.0.0.1:{args.port}/projects", data=payload,
+            headers={"X-Hearth-Secret": secret, "Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=120) as response:
+            result = json.load(response)
+        print(json.dumps(result, indent=2))
+        return 0
+    except HTTPError as exc:
+        try:
+            message = json.load(exc).get("error", f"HTTP {exc.code}")
+        except (ValueError, AttributeError):
+            message = f"HTTP {exc.code}"
+    except (OSError, URLError, ValueError) as exc:
+        message = str(exc)
+    print(f"chert-project: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

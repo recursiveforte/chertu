@@ -28,7 +28,23 @@ existing Codex daemon over SSH. `/hosts` lists configured hosts;
 project. Omitting `host` uses `local` (lemma in this deployment). Existing projects
 and threads stay on their original host. See [multi-host setup](docs/multi-host.md).
 
-Create a project with `/project name:chert dir:/home/cheru/Code/chert`. Type a prompt in `#chert` to open a session thread using that directory and the project's default harness. Reply in the thread to continue. `/harness` opens a picker; `/harness name:claude` changes the default directly. Existing threads keep their original harness. `/codex` and `/claude` explicitly launch a session using that harness in the current project.
+Ask Chertu in a local conversation to “create a project called my-app,” or use
+`/project name:my-app`. Chert creates a fresh folder under `PROJECT_ROOT` and a
+Discord project channel. Add `host:macbook` to create it on that configured host.
+To register existing files, use `/project name:chert dir:/home/cheru/Code/chert`.
+Type a prompt in the new channel to open a session thread using that directory
+and the project's default harness. Reply in the thread to continue. `/harness`
+opens a picker; `/harness name:claude` changes the default directly. Existing
+threads keep their original harness. `/codex` and `/claude` explicitly launch a
+session using that harness in the current project.
+
+Local Codex conversations receive instructions for `python3 /path/to/chert/bin/chert-project
+create NAME [--host HOST] [--dir PATH]`. The helper calls the authenticated local
+bridge API and returns the directory and channel URL; `list` shows projects and
+hosts. It does not initialize Git, publish a repository, or move the current
+conversation. Remote conversations can use the slash command; the shell helper
+runs on the gateway. If channel registration fails after folder creation, the
+folder is kept and the error gives an explicit-directory retry command.
 
 Use `/worktrees enabled:True` in a project channel to give each new session a fresh
 Git worktree, or `enabled:False` to use the project directory. `/worktrees` shows
@@ -93,7 +109,13 @@ cd chert
 
 Setup prompts privately for the token, prints the invitation link, and provisions private `projects` and `archived` categories. The initial `#chert` project uses the installation directory. Add more projects with `/project`; no harness-specific or broadcast/chat channels are created.
 
-The `/project` directory must already exist on the bot host. Absolute paths and `~` work; relative paths resolve beneath `PROJECT_ROOT` (default `~/projects`). Prompts are passed intact, without treating their first word as a directory. Discovered sessions are placed in the project whose directory most closely contains their working directory; sessions outside registered projects are ignored.
+An explicit `/project dir` must already exist on the selected host. Omit `dir` to
+create a new folder named after the project; existing paths are never silently
+adopted or overwritten. Absolute paths and `~` work; relative paths resolve
+beneath the host's project root (`PROJECT_ROOT` locally, default `~/projects`).
+Prompts are passed intact, without treating their first word as a directory.
+Discovered sessions are placed in the project whose directory most closely
+contains their working directory; sessions outside registered projects are ignored.
 
 Services:
 
@@ -112,7 +134,7 @@ Session commands use the harness recorded for the thread. Project channels selec
 
 | Operation | Commands |
 | --- | --- |
-| Projects | `/project name dir [host]`, `/hosts`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
+| Projects | `/project name [dir] [host]`, `/hosts`, `/harness [name]`, `/worktrees [enabled]`, `/archive [name]`, `/unarchive [name]` |
 | Launch | Plain prompt, `/codex`, `/claude`, `/worktree prompt`, `/no-worktree prompt`; `/astra` remains a Codex alias |
 | Find / copy | `/sessions`, `/resume`, `/fork` |
 | Configure | `/model`, `/globalmodel`, `/effort`, `/fast`, `/fast-default [mode]`, `/mode`, `/yolo`, `/rename` |

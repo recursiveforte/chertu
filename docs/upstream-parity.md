@@ -16,7 +16,7 @@ shared rendering; the current product intentionally uses project channels.
 
 | Operation | Implementation |
 | --- | --- |
-| `/project name dir [host]`, `/hosts` | Registers a directory on a configured execution host; lists connection status |
+| `/project name [dir] [host]`, `/hosts` | Creates a folder and channel, or registers an explicit existing directory; lists connection status |
 | `/download path` | Sends a file from the Codex session's host to Discord |
 | `/harness [name]` | Changes the durable default for new sessions; existing threads retain their harness |
 | `/worktrees [enabled]` | Views/changes the durable per-project default for fresh Git worktrees, shown in the channel topic; defaults to off |
@@ -187,6 +187,25 @@ conversations or production Discord.
 - Dashboard URLs, authenticated local control endpoints, and deployment entrypoints.
 
 ## Verification and limits
+
+Project creation is a fork extension. Omitting `/project dir` creates a fresh
+folder under the selected host's project root and registers its Discord channel.
+Existing paths, including symlinks, are rejected; an explicit directory retains
+the existing registration behavior. No Git repository is initialized or published.
+Local Codex prompts include instructions for `bin/chert-project`, which lists
+projects/hosts and creates projects through the authenticated gateway API using
+the same locked registration path as Discord. A local conversation can target a
+remote host; remote conversations use `/project` because the helper is gateway-local.
+Creation does not move an existing conversation. Failed channel registration
+retains the new folder and supplies an explicit-directory retry command.
+Tests cover real temporary directories, concurrent creation, name/path validation,
+remote routing, persistence failure cleanup, HTTP authorization and validation,
+and the actual helper subprocess against an isolated HTTP bridge with a mocked
+Discord guild. On 2026-11-05, `tests/live_codex_activity.py --project-create`
+passed with an isolated native Codex runtime: a plain-language request invoked
+the helper, created the temporary folder, persisted the project/channel binding,
+and returned the channel URL without exposing the hook secret. Discord used an
+in-memory guild; this does not establish live production Discord project creation.
 
 Per-project Codex fast defaults are a fork extension. Owner-only
 `/fast-default mode:on|off|inherit` changes new sessions in the current project

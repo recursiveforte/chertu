@@ -238,9 +238,10 @@ class LiveCodex:
         await self.connect()
         await self.attach(session.codex_thread)
         from chert.backends.codex.images import DELIVERY_CONTEXT
+        from chert.backends.codex.project_context import project_context
 
         inputs = [{"type": "text", "text": prompt},
-                  {"type": "text", "text": DELIVERY_CONTEXT}]
+                  {"type": "text", "text": DELIVERY_CONTEXT + "\n" + project_context(session.host)}]
         turn_id = await self.active_turn(session.codex_thread)
         if turn_id and not queue:
             await self.call(

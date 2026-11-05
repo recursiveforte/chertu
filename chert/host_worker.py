@@ -14,6 +14,22 @@ import sys
 import uuid
 
 
+def create_project_directory(name, root):
+    """Create a fresh child of the project root, never adopt existing content."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", name):
+        raise ValueError("Invalid project name.")
+    root = Path(root or "~/projects").expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / name
+    try:
+        path.mkdir()
+    except FileExistsError as exc:
+        raise ValueError(
+            f"Path already exists: {path}. To register an existing directory, supply dir explicitly."
+        ) from exc
+    return str(path)
+
+
 def execute(request):
     operation, params = request["operation"], request["params"]
     if request.get("path"):
@@ -35,6 +51,8 @@ def execute(request):
             raise ValueError(proc.stderr.strip()[:1200])
         return proc.stdout.strip()
 
+    if operation == "create-project-directory":
+        return create_project_directory(params["name"], request["root"])
     if operation == "directory":
         return str(directory(params["directory"]))
     if operation in {"repository", "worktree"}:

@@ -4,6 +4,7 @@ import asyncio
 import os
 import discord
 from chert.projects import create_project_channel
+from chert.host_worker import create_project_directory
 from chert.worktrees import validate_repository
 
 
@@ -38,12 +39,22 @@ class ProjectCommands:
             )
         raise ValueError("Project categories are missing. Run setup_discord.py again.")
 
-    async def create_project(self, name, directory, host="local"):
+    async def create_project(self, name, directory=None, host="local"):
         async with self.lock:
             if host not in self.frontend.hosts:
                 raise ValueError(f"Unknown host: {host}. Use /hosts to list configured hosts.")
+            name = self.registry.validate_name(name)
+            category = await self.category()
             remote = self.frontend.codex_hosts[host].remote
-            if remote:
+            fresh = directory is None
+            if fresh:
+                if remote:
+                    directory = await remote.run("create-project-directory", name=name)
+                else:
+                    directory = await asyncio.to_thread(
+                        create_project_directory, name, self.frontend.config.project_root
+                    )
+            elif remote:
                 directory = await remote.run("directory", directory=directory)
             project = self.registry.prepare(
                 name,
@@ -52,8 +63,15 @@ class ProjectCommands:
                 "codex" if remote else os.environ.get("DEFAULT_HARNESS") or "codex",
                 host=host,
             )
-            category = await self.category()
-            channel = await create_project_channel(self.registry, project, category.guild, category)
+            try:
+                channel = await create_project_channel(self.registry, project, category.guild, category)
+            except Exception as exc:
+                if fresh:
+                    raise ValueError(
+                        f"Created directory {directory}, but could not register its channel. "
+                        f"The directory was kept; retry /project name:{name} dir:{directory} host:{host}."
+                    ) from exc
+                raise
             self.channels[channel.id] = channel
             if self.frontend._main_channel is None:
                 self.frontend.main_channel = self.frontend.codex.main_channel = channel
@@ -214,9 +232,12 @@ class ProjectCommands:
             )
 
         @self.frontend.tree.command(
-            name="project", description="Create a project channel for a directory on an execution host"
+            name="project", description="Create a new project, or register an existing directory"
         )
-        async def project_command(interaction: discord.Interaction, name: str, dir: str, host: str = "local"):
+        @discord.app_commands.describe(
+            dir="Existing directory; omit to create a fresh folder under the host's project root"
+        )
+        async def project_command(interaction: discord.Interaction, name: str, dir: str | None = None, host: str = "local"):
             if not await self.project_permission(interaction):
                 return
             await interaction.response.defer(ephemeral=True)

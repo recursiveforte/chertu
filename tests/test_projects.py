@@ -313,6 +313,7 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
         for name in ("project", "harness", "archive", "unarchive"):
             self.assertIsNotNone(self.bot.tree.get_command(name))
         self.assertEqual(list(self.bot.tree.get_command("project")._params), ["name", "dir", "host"])
+        self.assertFalse(self.bot.tree.get_command("project")._params["dir"].required)
         self.assertIsNone(self.bot.tree.get_command("hub"))
         interaction = self.interaction()
         await self.bot.tree.get_command("harness")._do_call(interaction, {"name": ""})
@@ -350,6 +351,66 @@ class ProjectFrontendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "New threads: project directory", guild.create_text_channel.call_args.kwargs["topic"]
         )
+
+    async def test_name_only_command_creates_directory_and_persists_channel(self):
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=SimpleNamespace(id=600)))
+        self.bot.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        interaction = self.interaction()
+        await self.bot.tree.get_command("project")._do_call(interaction, {"name": "New-App"})
+        project = ProjectStore(self.projects.path).projects["new-app"]
+        self.assertEqual(project.directory, str(self.root / "new-app"))
+        self.assertTrue(Path(project.directory).is_dir())
+        self.assertEqual(project.channel_id, 600)
+        interaction.followup.send.assert_awaited_once()
+
+    async def test_concurrent_creation_and_invalid_names_do_not_duplicate_channels(self):
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=SimpleNamespace(id=600)))
+        self.bot.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        for name in ("../escape", "bad name", "one"):
+            with self.assertRaises(ValueError):
+                await self.bot.project_commands.create_project(name)
+        guild.create_text_channel.assert_not_called()
+        results = await asyncio.gather(
+            self.bot.project_commands.create_project("fresh"),
+            self.bot.project_commands.create_project("fresh"), return_exceptions=True,
+        )
+        self.assertEqual(sum(isinstance(r, Project) for r in results), 1)
+        self.assertEqual(sum(isinstance(r, ValueError) for r in results), 1)
+        guild.create_text_channel.assert_awaited_once()
+
+    async def test_failed_registration_keeps_folder_and_supports_explicit_retry(self):
+        guild = SimpleNamespace(create_text_channel=AsyncMock(side_effect=RuntimeError("offline")))
+        self.bot.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        with self.assertRaisesRegex(ValueError, "directory was kept; retry"):
+            await self.bot.project_commands.create_project("fresh")
+        self.assertTrue((self.root / "fresh").is_dir())
+        self.assertNotIn("fresh", self.projects.projects)
+        guild.create_text_channel.side_effect = None
+        guild.create_text_channel.return_value = SimpleNamespace(id=600)
+        result = await self.bot.project_commands.create_project("fresh", "fresh")
+        self.assertEqual(result.channel_id, 600)
+
+    async def test_failed_save_rolls_back_new_channel_and_registry(self):
+        channel = SimpleNamespace(id=600, delete=AsyncMock())
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=channel))
+        self.bot.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        with patch.object(self.projects, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(ValueError):
+                await self.bot.project_commands.create_project("fresh")
+        self.assertNotIn("fresh", self.projects.projects)
+        self.assertNotIn(600, self.bot.project_channels)
+        channel.delete.assert_awaited_once()
+
+    async def test_remote_creation_uses_remote_host_and_never_local_root(self):
+        remote = SimpleNamespace(run=AsyncMock(return_value="/remote/projects/fresh"))
+        self.bot.hosts["remote"] = SimpleNamespace()
+        self.bot.codex_hosts["remote"] = SimpleNamespace(remote=remote, shutdown=AsyncMock())
+        guild = SimpleNamespace(create_text_channel=AsyncMock(return_value=SimpleNamespace(id=600)))
+        self.bot.project_commands.category = AsyncMock(return_value=SimpleNamespace(guild=guild))
+        result = await self.bot.project_commands.create_project("fresh", host="remote")
+        remote.run.assert_awaited_once_with("create-project-directory", name="fresh")
+        self.assertEqual((result.host, result.directory), ("remote", "/remote/projects/fresh"))
+        self.assertFalse((self.root / "fresh").exists())
 
     async def test_startup_does_not_run_legacy_claude_setup_or_fetch_harness_channels(self):
         self.bot.fetch_guild = AsyncMock(return_value=SimpleNamespace(id=1, owner_id=7))

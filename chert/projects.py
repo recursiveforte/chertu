@@ -81,7 +81,7 @@ class ProjectStore:
     def worktree_root(self, project):
         return (self.path.parent / "worktrees" / str(project.channel_id)).resolve()
 
-    def validate(self, name, directory, root, host="local"):
+    def validate_name(self, name):
         name = name.strip().lower()
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", name):
             raise ValueError(
@@ -91,6 +91,10 @@ class ProjectStore:
             raise ValueError(
                 f"Project {name!r} already exists. Use /unarchive to reopen an archived project."
             )
+        return name
+
+    def validate(self, name, directory, root, host="local"):
+        name = self.validate_name(name)
         path = Path(directory)
         if host == "local":
             path = path.expanduser()
@@ -113,5 +117,10 @@ async def create_project_channel(store, project, guild, category):
     channel = await guild.create_text_channel(project.name, category=category, topic=project.topic)
     project.channel_id = channel.id
     store.projects[project.name] = project
-    store.save()
+    try:
+        store.save()
+    except Exception:
+        del store.projects[project.name]
+        await channel.delete(reason="Project registration could not be saved")
+        raise
     return channel

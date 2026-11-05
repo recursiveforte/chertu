@@ -317,6 +317,24 @@ class HostRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_create_directory_rejects_traversal_existing_files_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            def create(name):
+                return execute({"operation": "create-project-directory", "root": str(root),
+                                "runtime": tmp, "params": {"name": name}})
+            with self.assertRaises(ValueError):
+                create("../escape")
+            self.assertFalse(root.exists())
+            self.assertEqual(create("fresh"), str(root / "fresh"))
+            (root / "file").write_text("keep")
+            (root / "link").symlink_to(Path(tmp) / "missing")
+            for name in ("fresh", "file", "link"):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    create(name)
+            self.assertEqual((root / "file").read_text(), "keep")
+            self.assertTrue((root / "link").is_symlink())
+
     def test_helper_runs_standalone_without_chert_or_discord_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(__file__).parents[1] / "chert/host_worker.py"
