@@ -185,6 +185,19 @@ conversations or production Discord.
 - Existing state schemas, native conversation identities, atomic writes, and
   last-good Codex state backups. Old `exec` records attach without replaying turns.
 - Dashboard URLs, authenticated local control endpoints, and deployment entrypoints.
+  The `/files/` dashboard adds read-only project browsing across local and SSH
+  hosts, rendered Markdown (tables, code fences, relative links/images, and
+  heading anchors), text/source and raster image previews, downloads, direct
+  links, and five-second refresh of open documents. It uses the existing
+  loopback/authentication boundary. Private/hidden paths and directory escapes
+  are rejected; raw HTML is not executed. On 2026-11-05, six regression tests
+  covered access boundaries, rendering, downloads, refresh, and remote failure.
+  An isolated Chrome session exercised desktop/mobile and dark layouts, relative
+  links/anchors/images, source view, filtering, downloads, and live file refresh
+  with temporary fixtures. Read-only checks also rendered existing local Chert
+  and remote MacBook Markdown through the actual SSH host configuration.
+  Editing, executable HTML previews, PDF previews, and remote Claude execution
+  are not provided by this viewer.
 
 ## Verification and limits
 

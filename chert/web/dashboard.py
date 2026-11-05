@@ -17,6 +17,8 @@ from chert.vendor import checkin as legacy
 from flask import abort, jsonify, redirect, render_template, request, send_from_directory
 
 app = legacy.app
+from chert.web.files import files
+app.register_blueprint(files)
 STATE = runtime_path(os.environ.get("CODEX_STATE_FILE"), "private/codex-state.json")
 
 
@@ -85,7 +87,7 @@ def transcript_path(sid):
 
 @app.route("/")
 def home():
-    return '<a href="/codex/">Codex signalscope</a> · <a href="/claudes/">Claude signalscope</a>'
+    return '<a href="/files/">Project files</a> · <a href="/codex/">Codex signalscope</a> · <a href="/claudes/">Claude signalscope</a>'
 
 
 @app.route("/codex")

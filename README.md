@@ -185,6 +185,21 @@ Daemon-based Codex controls use [native thread and turn APIs](https://learn.chat
 
 The dashboard reuses the upstream templates at `/claudes/` and `/codex/`. It remains on loopback and retains upstream's authentication-proxy deployment model. Codex's conversation pane uses normalized live transcript records; its screen pane attaches a real terminal. `/log` and `/resume` access native stored history.
 
+Open `/files/` on the same dashboard to browse registered project folders on the
+local machine or configured SSH hosts. Markdown previews include tables, fenced
+code, relative document/image links, and heading anchors. The viewer also shows
+UTF-8 text and PNG/JPEG/GIF/WebP images, offers source view and downloads, and
+refreshes an open file every five seconds while the tab is visible. Use the folder
+refresh button to discover newly created files. Copy link retains the project and
+file path. The page adapts to phones and your system's light/dark preference.
+
+File access is read-only and confined to registered directories. Hidden paths,
+`private/`, dependency folders, and key/secret files are excluded. HTML is shown
+as source, not executed; Markdown raw HTML is disabled. Previews/downloads are
+limited to 8 MB, text rendering to 2 MB, and folder listings to 2,000 entries.
+Remote hosts must be reachable through Chert's existing SSH configuration. Keep
+the existing loopback/authenticated-proxy setup when exposing the viewer.
+
 ## Code organization
 
 Application code lives under `chert/`: `discord/` contains the gateway and UI, `backends/` contains the harnesses, `web/` contains the dashboard and local API, and `vendor/` isolates audited upstream code. Root Python files are thin deployment entrypoints. See [architecture](docs/architecture.md) for component boundaries and retained compatibility paths.

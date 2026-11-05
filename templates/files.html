@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Files · Chert</title>
+  <link rel="stylesheet" href="/files/static/files.css">
+  <script src="/files/static/files.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/files/">◈ <span>Chert</span></a>
+    <span class="divider">/</span><span>Files</span>
+    <a class="sessions" href="/codex/">Sessions ↗</a>
+  </header>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="Project files">
+      <label class="eyebrow" for="project">Workspace</label>
+      <select id="project" aria-label="Project"><option>Loading projects…</option></select>
+      <div class="folderbar"><button id="up" title="Parent folder" aria-label="Parent folder">↑</button><span id="folder">Project root</span><button id="reload" title="Refresh files" aria-label="Refresh files">↻</button></div>
+      <input id="filter" type="search" placeholder="Filter this folder…" aria-label="Filter this folder">
+      <nav id="entries" aria-label="Files"></nav>
+      <p id="list-status" class="small" role="status"></p>
+      <div class="sidebar-note">Your agent’s work, in view.<br>Markdown, images, and source files.</div>
+    </aside>
+    <main>
+      <div id="welcome" class="welcome">
+        <span class="eyebrow">A place for the finished thought</span>
+        <h1>Open what you’re<br>working on.</h1>
+        <p>Choose a project, then a file. Read documents, inspect source, and see images as your agent makes them.</p>
+        <div class="file-types"><span>Markdown</span><span>Images</span><span>Code & text</span></div>
+      </div>
+      <section id="reader" hidden>
+        <div class="documentbar">
+          <div class="document-info"><h1 id="filename"></h1><div id="metadata" class="small"></div></div>
+          <div class="actions"><button id="copy">Copy link</button><a id="download" class="button" download>Download ↓</a></div>
+        </div>
+        <div class="readerbar">
+          <div class="tabs" role="group" aria-label="View"><button id="preview" class="active" aria-pressed="true">Preview</button><button id="source" aria-pressed="false">Source</button></div>
+          <label class="live"><input id="auto" type="checkbox" checked> Auto-refresh</label>
+          <span id="status" class="small" role="status"></span>
+        </div>
+        <article id="content" class="document"></article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
